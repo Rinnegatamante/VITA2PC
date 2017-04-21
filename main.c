@@ -257,7 +257,16 @@ int module_start(SceSize argc, const void *args) {
 }
 
 int module_stop(SceSize argc, const void *args) {
-
+	
+	// Freeing encoder and net related stuffs
+	if (!firstBoot){
+		if (!isEncoderUnavailable) encoderTerm(&jpeg_encoder);
+		if (isNetAvailable){
+			sceNetSocketClose(stream_skt);
+			free((void*)isNetAvailable); 
+		}
+	}
+	
 	// Freeing hooks
 	int i;
 	for (i = 0; i < HOOKS_NUM; i++){
