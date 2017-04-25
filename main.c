@@ -7,17 +7,18 @@
 #include "utils.h"
 
 #define HOOKS_NUM       10
-#define MENU_ENTRIES    5
+#define MENU_ENTRIES    6
 #define QUALITY_ENTRIES 5
 
 #define STREAM_PORT    5000     // Port used for screen streaming
 #define STREAM_BUFSIZE 0x80000  // Size of stream buffer
 #define NET_SIZE       0x100000 // Size of net module buffer
 
-#define NOT_TRIGGERED 0
-#define CONFIG_MENU   1
-#define LISTENING     2
-#define BROADCASTING  3
+#define NOT_TRIGGERED   0
+#define CONFIG_MENU     1
+#define LISTENING       2
+#define SYNC_BROADCAST  3
+#define ASYNC_BROADCAST 4
 
 static SceUID g_hooks[HOOKS_NUM];
 static tai_hook_ref_t ref[HOOKS_NUM];
@@ -38,7 +39,8 @@ static int qual_i = 2;
 static char* qualities[] = {"Best", "High", "Default", "Low", "Worst"};
 static uint8_t qual_val[] = {0, 64, 128, 192, 255};
 static uint8_t frameskip = 0;
-static char* menu[] = {"Video Quality: ", "Video Codec: MJPEG", "Hardware Acceleration: Enabled","Frame Skip: ", "Start Screen Streaming"};
+static uint8_t stream_type = 1;
+static char* menu[] = {"Video Quality: ", "Video Codec: MJPEG", "Hardware Acceleration: Enabled","Frame Skip: ", "Stream Type: ", "Start Screen Streaming"};
 
 // Config Menu Renderer
 void drawConfigMenu(){
@@ -51,6 +53,9 @@ void drawConfigMenu(){
 				break;
 			case 3:
 				drawStringF(5, 70 + i*20, "%s%u", menu[i], frameskip);
+				break;
+			case 4:
+				drawStringF(5, 70 + i*20, "%s%s", stream_type ? "Asynchronous" : "Synchronous");
 				break;
 			default:
 				drawString(5, 70 + i*20, menu[i]);
@@ -119,7 +124,7 @@ int sceDisplaySetFrameBuf_patched(const SceDisplayFrameBuf *pParam, int sync) {
 				int ret = sceNetShowNetstat();
 				if (ret == SCE_NET_ERROR_ENOTINIT) {
 					SceNetInitParam initparam;
-					initparam.memory = isNetAvailable;
+					initparam.memory = (void*)isNetAvailable;
 					initparam.size = NET_SIZE;
 					initparam.flags = 0;
 					sceNetInit(&initparam);
@@ -165,14 +170,22 @@ int sceDisplaySetFrameBuf_patched(const SceDisplayFrameBuf *pParam, int sync) {
 				sceNetRecvfrom(stream_skt, unused, 8, 0, (SceNetSockaddr*)&addrFrom, &fromLen);
 				sprintf(txt, "%d;%d;%hhu", pParam->pitch, pParam->height, 1);
 				sceNetSendto(stream_skt, txt, 32, 0, (SceNetSockaddr*)&addrFrom, sizeof(addrFrom));
-				status = BROADCASTING;
+				status = SYNC_BROADCAST + stream_type;
+				
+				// TODO: Add asynchronous broadcasting through a secondary thread
+				if (status == ASYNC_BROADCAST){
+					
+				}
+				
 				break;
-			case BROADCASTING:
+			case SYNC_BROADCAST:
 				if (loopDrawing == (3 + frameskip)){
 					mem = encodeARGB(&jpeg_encoder, pParam->base, pParam->width, pParam->height, pParam->pitch, &mem_size);
 					sceNetSendto(stream_skt, mem, mem_size, 0, (SceNetSockaddr*)&addrFrom, sizeof(addrFrom));
 					loopDrawing = 0;
 				}else loopDrawing++;
+				break;
+			default:
 				break;
 		}
 	}
@@ -181,7 +194,7 @@ int sceDisplaySetFrameBuf_patched(const SceDisplayFrameBuf *pParam, int sync) {
 
 // Checking buttons startup/closeup
 void checkInput(SceCtrlData *ctrl){
-	if (status != NOT_TRIGGERED && status != BROADCASTING){
+	if (status != NOT_TRIGGERED && status < SYNC_BROADCAST){
 		if ((ctrl->buttons & SCE_CTRL_DOWN) && (!(old_buttons & SCE_CTRL_DOWN))){
 			cfg_i++;
 			if (cfg_i >= MENU_ENTRIES) cfg_i = 0;
@@ -191,14 +204,15 @@ void checkInput(SceCtrlData *ctrl){
 		}else if ((ctrl->buttons & SCE_CTRL_CROSS) && (!(old_buttons & SCE_CTRL_CROSS))){
 			switch (cfg_i){
 				case 0:
-					qual_i++;
-					if (qual_i >= QUALITY_ENTRIES) qual_i = 0;
+					qual_i = (qual_i + 1) % QUALITY_ENTRIES;
 					break;
 				case 3:
-					frameskip++;
-					if (frameskip > 5) frameskip = 0;
+					frameskip = (frameskip + 1) % 5;
 					break;
 				case 4:
+					stream_type = (stream_type + 1) % 2;
+					break;
+				case 5:
 					encoderSetQuality(&jpeg_encoder, qual_val[qual_i]);
 					status = LISTENING;
 					break;
@@ -212,7 +226,7 @@ void checkInput(SceCtrlData *ctrl){
 		status = CONFIG_MENU;
 	}
 	old_buttons = ctrl->buttons;
-	if (status != NOT_TRIGGERED && status != BROADCASTING) ctrl->buttons = 0x0; // Nullifing input
+	if (status != NOT_TRIGGERED && status < SYNC_BROADCAST) ctrl->buttons = 0x0; // Nullifing input
 }
 
 int sceCtrlPeekBufferPositive_patched(int port, SceCtrlData *ctrl, int count) {
