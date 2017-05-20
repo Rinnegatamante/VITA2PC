@@ -6,7 +6,7 @@
 #include "encoder.h"
 #include "utils.h"
 
-#define HOOKS_NUM       10
+#define HOOKS_NUM       9
 #define MENU_ENTRIES    6
 #define QUALITY_ENTRIES 5
 
@@ -92,21 +92,6 @@ int scePowerSetArmClockFrequency_patched(int freq) {
 	return SetGenericClockFrequency(444, ref[3]);
 }
 
-// We hook sceGxmInitialize to perform stuffs on startup
-int sceGxmInitialize_patched(const SceGxmInitializeParams *params) {
-	
-	// Initializing internal renderer
-	setTextColor(0x00FFFFFF);
-	
-	// Setting maximum clocks
-	scePowerSetArmClockFrequency(444);
-	scePowerSetBusClockFrequency(222);
-	scePowerSetGpuClockFrequency(222);
-	scePowerSetGpuXbarClockFrequency(166);
-	
-	return TAI_CONTINUE(int, ref[4], params);
-}
-
 // This can be considered as our main loop
 int sceDisplaySetFrameBuf_patched(const SceDisplayFrameBuf *pParam, int sync) {
 	
@@ -189,7 +174,7 @@ int sceDisplaySetFrameBuf_patched(const SceDisplayFrameBuf *pParam, int sync) {
 				break;
 		}
 	}
-	return TAI_CONTINUE(int, ref[5], pParam, sync);
+	return TAI_CONTINUE(int, ref[4], pParam, sync);
 }
 
 // Checking buttons startup/closeup
@@ -230,25 +215,25 @@ void checkInput(SceCtrlData *ctrl){
 }
 
 int sceCtrlPeekBufferPositive_patched(int port, SceCtrlData *ctrl, int count) {
-	int ret = TAI_CONTINUE(int, ref[6], port, ctrl, count);
+	int ret = TAI_CONTINUE(int, ref[5], port, ctrl, count);
 	checkInput(ctrl);
 	return ret;
 }
 
 int sceCtrlPeekBufferPositive2_patched(int port, SceCtrlData *ctrl, int count) {
-	int ret = TAI_CONTINUE(int, ref[7], port, ctrl, count);
+	int ret = TAI_CONTINUE(int, ref[6], port, ctrl, count);
 	checkInput(ctrl);
 	return ret;
 }
 
 int sceCtrlReadBufferPositive_patched(int port, SceCtrlData *ctrl, int count) {
-	int ret = TAI_CONTINUE(int, ref[8], port, ctrl, count);
+	int ret = TAI_CONTINUE(int, ref[7], port, ctrl, count);
 	checkInput(ctrl);
 	return ret;
 }
 
 int sceCtrlReadBufferPositive2_patched(int port, SceCtrlData *ctrl, int count) {
-	int ret = TAI_CONTINUE(int, ref[9], port, ctrl, count);
+	int ret = TAI_CONTINUE(int, ref[8], port, ctrl, count);
 	checkInput(ctrl);
 	return ret;
 }
@@ -256,11 +241,20 @@ int sceCtrlReadBufferPositive2_patched(int port, SceCtrlData *ctrl, int count) {
 void _start() __attribute__ ((weak, alias ("module_start")));
 int module_start(SceSize argc, const void *args) {
 	
+	// Initializing internal renderer
+	setTextColor(0x00FFFFFF);
+	
+	// Setting maximum clocks
+	scePowerSetArmClockFrequency(444);
+	scePowerSetBusClockFrequency(222);
+	scePowerSetGpuClockFrequency(222);
+	scePowerSetGpuXbarClockFrequency(166);
+	
+	// Hooking needed functions
 	hookFunction(0xB8D7B3FB, scePowerSetBusClockFrequency_patched);
 	hookFunction(0x717DB06C, scePowerSetGpuClockFrequency_patched);
 	hookFunction(0xA7739DBE, scePowerSetGpuXbarClockFrequency_patched);
 	hookFunction(0x74DB5AE5, scePowerSetArmClockFrequency_patched);
-	hookFunction(0xB0F1E4EC, sceGxmInitialize_patched);
 	hookFunction(0x7A410B64, sceDisplaySetFrameBuf_patched);
 	hookFunction(0xA9C3CED6, sceCtrlPeekBufferPositive_patched);
 	hookFunction(0x15F81E8C, sceCtrlPeekBufferPositive2_patched);
