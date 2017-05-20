@@ -20,7 +20,8 @@
 #define SYNC_BROADCAST  3
 #define ASYNC_BROADCAST 4
 
-static SceUID g_hooks[HOOKS_NUM];
+static SceNetSockaddrIn addrTo, addrFrom;
+static SceUID g_hooks[HOOKS_NUM], stream_thread_id, async_mutex;
 static tai_hook_ref_t ref[HOOKS_NUM];
 static uint8_t cur_hook = 0;
 static SceUID isEncoderUnavailable = 0;
@@ -36,6 +37,7 @@ static int loopDrawing = 0;
 static uint32_t old_buttons;
 static int cfg_i = 0;
 static int qual_i = 2;
+static uint8_t* mem;
 static char* qualities[] = {"Best", "High", "Default", "Low", "Worst"};
 static uint8_t qual_val[] = {0, 64, 128, 192, 255};
 static uint8_t frameskip = 0;
@@ -55,7 +57,7 @@ void drawConfigMenu(){
 				drawStringF(5, 70 + i*20, "%s%u", menu[i], frameskip);
 				break;
 			case 4:
-				drawStringF(5, 70 + i*20, "%s%s", stream_type ? "Asynchronous" : "Synchronous");
+				drawStringF(5, 70 + i*20, "%s%s", menu[i], stream_type ? "Asynchronous" : "Synchronous");
 				break;
 			default:
 				drawString(5, 70 + i*20, menu[i]);
@@ -69,6 +71,19 @@ void drawConfigMenu(){
 void hookFunction(uint32_t nid, const void* func){
 	g_hooks[cur_hook] = taiHookFunctionImport(&ref[cur_hook], TAI_MAIN_MODULE, TAI_ANY_LIBRARY, nid, func);
 	cur_hook++;
+}
+
+// Asynchronous streaming thread
+int stream_thread(SceSize args, void *argp){
+	int mem_size;
+	SceDisplayFrameBuf param;
+	param.size = sizeof(SceDisplayFrameBuf);
+	sceKernelWaitSema(async_mutex, 1, NULL);
+	for (;;){
+		sceDisplayGetFrameBuf(&param, SCE_DISPLAY_SETBUF_NEXTFRAME);
+		mem = encodeARGB(&jpeg_encoder, param.base, param.width, param.height, param.pitch, &mem_size);
+		sceNetSendto(stream_skt, mem, mem_size, 0, (SceNetSockaddr*)&addrFrom, sizeof(addrFrom));
+	}
 }
 
 // We prevent the application to manually reset clocks to lower values
@@ -97,6 +112,9 @@ int sceDisplaySetFrameBuf_patched(const SceDisplayFrameBuf *pParam, int sync) {
 	
 	if (firstBoot){
 		firstBoot = 0;
+		
+		// Initializing internal renderer
+		setTextColor(0x00FFFFFF);
 		
 		// Initializing JPG encoder
 		isEncoderUnavailable = encoderInit(pParam->width, pParam->height, pParam->pitch, &jpeg_encoder, video_quality);
@@ -133,8 +151,6 @@ int sceDisplaySetFrameBuf_patched(const SceDisplayFrameBuf *pParam, int sync) {
 		char txt[32], unused[256];
 		int sndbuf_size;
 		int mem_size;
-		uint8_t* mem;
-		SceNetSockaddrIn addrTo, addrFrom;
 		unsigned int fromLen = sizeof(addrFrom);
 		switch (status){
 			case CONFIG_MENU:
@@ -157,10 +173,8 @@ int sceDisplaySetFrameBuf_patched(const SceDisplayFrameBuf *pParam, int sync) {
 				sceNetSendto(stream_skt, txt, 32, 0, (SceNetSockaddr*)&addrFrom, sizeof(addrFrom));
 				status = SYNC_BROADCAST + stream_type;
 				
-				// TODO: Add asynchronous broadcasting through a secondary thread
-				if (status == ASYNC_BROADCAST){
-					
-				}
+				// Sending request to secondary thread
+				if (status == ASYNC_BROADCAST) sceKernelSignalSema(async_mutex, 1);
 				
 				break;
 			case SYNC_BROADCAST:
@@ -241,14 +255,18 @@ int sceCtrlReadBufferPositive2_patched(int port, SceCtrlData *ctrl, int count) {
 void _start() __attribute__ ((weak, alias ("module_start")));
 int module_start(SceSize argc, const void *args) {
 	
-	// Initializing internal renderer
-	setTextColor(0x00FFFFFF);
-	
 	// Setting maximum clocks
 	scePowerSetArmClockFrequency(444);
 	scePowerSetBusClockFrequency(222);
 	scePowerSetGpuClockFrequency(222);
 	scePowerSetGpuXbarClockFrequency(166);
+	
+	// Mutex for asynchronous streaming triggering
+	async_mutex = sceKernelCreateSema("async_mutex", 0, 0, 1, NULL);
+	
+	// Starting secondary thread for asynchronous streaming
+	stream_thread_id = sceKernelCreateThread("stream_thread", stream_thread, 0x40, 0x400000, 0, 0, NULL);
+	if (stream_thread_id >= 0) sceKernelStartThread(stream_thread_id, 0, NULL);
 	
 	// Hooking needed functions
 	hookFunction(0xB8D7B3FB, scePowerSetBusClockFrequency_patched);
