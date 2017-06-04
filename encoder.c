@@ -85,6 +85,7 @@ void encoderTerm(encoder* enc){
 		sceKernelFreeMemBlock(enc->memblocks[1]);
 	}else{
 		jpeg_destroy_compress(&cinfo);
+		free(enc->tempbuf_addr);
 	}
 }
 
