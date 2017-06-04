@@ -42,7 +42,7 @@ static char* qualities[] = {"Best", "High", "Default", "Low", "Worst"};
 static uint8_t qual_val[] = {0, 64, 128, 192, 255};
 static uint8_t frameskip = 0;
 static uint8_t stream_type = 1;
-static char* menu[] = {"Video Quality: ", "Video Codec: MJPEG", "Hardware Acceleration: Enabled","Frame Skip: ", "Stream Type: ", "Start Screen Streaming"};
+static char* menu[] = {"Video Quality: ", "Video Codec: MJPEG", "Hardware Acceleration: ","Frame Skip: ", "Stream Type: ", "Start Screen Streaming"};
 
 // Config Menu Renderer
 void drawConfigMenu(){
@@ -52,6 +52,9 @@ void drawConfigMenu(){
 		switch (i){
 			case 0:
 				drawStringF(5, 70 + i*20, "%s%s", menu[i], qualities[qual_i]);
+				break;
+			case 2:
+				drawStringF(5, 70 + i*20, "%s%s", menu[i], jpeg_encoder.isHwAccelerated ? "Enabled" : "Disabled");
 				break;
 			case 3:
 				drawStringF(5, 70 + i*20, "%s%u", menu[i], frameskip);
@@ -169,7 +172,7 @@ int sceDisplaySetFrameBuf_patched(const SceDisplayFrameBuf *pParam, int sync) {
 					sceNetSetsockopt(stream_skt, SCE_NET_SOL_SOCKET, SCE_NET_SO_SNDBUF, &sndbuf_size, sizeof(sndbuf_size));
 				}
 				sceNetRecvfrom(stream_skt, unused, 8, 0, (SceNetSockaddr*)&addrFrom, &fromLen);
-				sprintf(txt, "%d;%d;%hhu", pParam->pitch, pParam->height, 1);
+				sprintf(txt, "%d;%d;%hhu", pParam->pitch, pParam->height, jpeg_encoder.isHwAccelerated);
 				sceNetSendto(stream_skt, txt, 32, 0, (SceNetSockaddr*)&addrFrom, sizeof(addrFrom));
 				status = SYNC_BROADCAST + stream_type;
 				
@@ -188,6 +191,12 @@ int sceDisplaySetFrameBuf_patched(const SceDisplayFrameBuf *pParam, int sync) {
 				break;
 		}
 	}
+	
+	#ifndef NO_DEBUG
+	setTextColor(0x00FFFFFF);
+	drawStringF(5, 400, "taipool free space: %lu KBs", (taipool_get_free_space()>>10));
+	#endif
+	
 	return TAI_CONTINUE(int, ref[4], pParam, sync);
 }
 

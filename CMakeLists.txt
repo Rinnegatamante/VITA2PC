@@ -39,6 +39,7 @@ target_link_libraries(SA_ScreenStream
   SceDisplay_stub
   SceGxm_stub
   SceSysmem_stub
+  jpeg
   k
   gcc
   SceNet_stub_weak
