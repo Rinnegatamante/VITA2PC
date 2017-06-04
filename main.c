@@ -1,10 +1,10 @@
 #include <vitasdk.h>
 #include <taihen.h>
+#include <taipool.h>
 #include <libk/stdlib.h>
 #include <libk/stdio.h>
 #include "renderer.h"
 #include "encoder.h"
-#include "utils.h"
 
 #define HOOKS_NUM       9
 #define MENU_ENTRIES    6
@@ -267,6 +267,9 @@ int module_start(SceSize argc, const void *args) {
 	// Starting secondary thread for asynchronous streaming
 	stream_thread_id = sceKernelCreateThread("stream_thread", stream_thread, 0x40, 0x400000, 0, 0, NULL);
 	if (stream_thread_id >= 0) sceKernelStartThread(stream_thread_id, 0, NULL);
+	
+	// Initializing taipool mempool for dynamic memory managing
+	taipool_init(0x400000);
 	
 	// Hooking needed functions
 	hookFunction(0xB8D7B3FB, scePowerSetBusClockFrequency_patched);

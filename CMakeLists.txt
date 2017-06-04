@@ -11,7 +11,7 @@ endif()
 project(SA_ScreenStream)
 include("${VITASDK}/share/vita.cmake" REQUIRED)
 
-set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wl,-q -Wall -O3 -std=gnu99")
+set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wl,-q -Wall -O3 -std=gnu99 -DTAIPOOL_AS_STDLIB")
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++11 -fno-rtti -fno-exceptions")
 
 include_directories(
@@ -26,13 +26,13 @@ if (NOT ${RELEASE})
 endif()
 
 add_executable(SA_ScreenStream
-  utils.c
   main.c
   renderer.c
   encoder.c
 )
 
 target_link_libraries(SA_ScreenStream
+  taipool
   taihen_stub
   SceLibKernel_stub
   SceIofilemgr_stub
