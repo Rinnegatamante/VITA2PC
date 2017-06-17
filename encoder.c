@@ -71,7 +71,7 @@ SceUID encoderInit(int width, int height, int pitch, encoder* enc, uint8_t video
 			return enc->memblocks[1];
 		}
 		sceKernelGetMemBlockBase(enc->memblocks[1], &enc->context);
-		sceJpegEncoderInit(enc->context, width, height, PIXELFORMAT_YCBCR420 | PIXELFORMAT_CSC_ARGB_YCBCR, enc->tempbuf_addr + enc->in_size, enc->out_size);
+		sceJpegEncoderInit(enc->context, width, height, SCE_JPEGENC_PIXELFORMAT_YCBCR420 | SCE_JPEGENC_PIXELFORMAT_CSC_ARGB_YCBCR, enc->tempbuf_addr + enc->in_size, enc->out_size);
 		sceJpegEncoderSetValidRegion(enc->context, width, height);
 	}
 	encoderSetQuality(enc, video_quality);
@@ -91,7 +91,7 @@ void encoderTerm(encoder* enc){
 
 void* encodeARGB(encoder* enc, void* buffer, int width, int height, int pitch, int* outSize){
 	if (enc->isHwAccelerated){
-		sceJpegEncoderCsc(enc->context, enc->tempbuf_addr, buffer, pitch, PIXELFORMAT_ARGB8888);
+		sceJpegEncoderCsc(enc->context, enc->tempbuf_addr, buffer, pitch, SCE_JPEGENC_PIXELFORMAT_ARGB8888);
 		*outSize = sceJpegEncoderEncode(enc->context, enc->tempbuf_addr);
 		return enc->tempbuf_addr + enc->in_size;
 	}else{
