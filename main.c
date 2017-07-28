@@ -6,13 +6,13 @@
 #include "renderer.h"
 #include "encoder.h"
 
-#define HOOKS_NUM       9
-#define MENU_ENTRIES    6
+#define HOOKS_NUM       10
+#define MENU_ENTRIES    7
 #define QUALITY_ENTRIES 5
 
-#define STREAM_PORT    5000     // Port used for screen streaming
-#define STREAM_BUFSIZE 0x80000  // Size of stream buffer
-#define NET_SIZE       0x100000 // Size of net module buffer
+#define STREAM_PORT    5000    // Port used for screen streaming
+#define STREAM_BUFSIZE 0x80000 // Size of stream buffer
+#define NET_SIZE       0x90000 // Size of net module buffer
 
 #define NOT_TRIGGERED   0
 #define CONFIG_MENU     1
@@ -42,7 +42,8 @@ static char* qualities[] = {"Best", "High", "Default", "Low", "Worst"};
 static uint8_t qual_val[] = {0, 64, 128, 192, 255};
 static uint8_t frameskip = 0;
 static uint8_t stream_type = 1;
-static char* menu[] = {"Video Quality: ", "Video Codec: MJPEG", "Hardware Acceleration: ","Frame Skip: ", "Stream Type: ", "Start Screen Streaming"};
+static char* menu[] = {"Video Quality: ", "Video Codec: MJPEG", "Hardware Acceleration: ", "Downscaler: ","Frame Skip: ", "Stream Type: ", "Start Screen Streaming"};
+static uint32_t* rescale_buffer = NULL;
 
 // Config Menu Renderer
 void drawConfigMenu(){
@@ -57,9 +58,12 @@ void drawConfigMenu(){
 				drawStringF(5, 70 + i*20, "%s%s", menu[i], jpeg_encoder.isHwAccelerated ? "Enabled" : "Disabled");
 				break;
 			case 3:
-				drawStringF(5, 70 + i*20, "%s%u", menu[i], frameskip);
+				drawStringF(5, 70 + i*20, "%s%s", menu[i], (jpeg_encoder.rescale_buffer != NULL) ? "Enabled" : "Disabled");
 				break;
 			case 4:
+				drawStringF(5, 70 + i*20, "%s%u", menu[i], frameskip);
+				break;
+			case 5:
 				drawStringF(5, 70 + i*20, "%s%s", menu[i], stream_type ? "Asynchronous" : "Synchronous");
 				break;
 			default:
@@ -76,6 +80,20 @@ void hookFunction(uint32_t nid, const void* func){
 	cur_hook++;
 }
 
+// CPU downscaling function
+void rescaleBuffer(uint32_t* src, uint32_t* dst, int width, int height, int pitch){
+	int i,j,z,k,ptr;
+	z=0;
+	k=0;
+	for (i=0;i < height; i+=2){
+		ptr = pitch * i;
+		z = 512 * (k++);
+		for (j=0;j < width; j+=2){
+			dst[z++]=src[ptr+j];
+		}
+	}
+}
+
 // Asynchronous streaming thread
 int stream_thread(SceSize args, void *argp){
 	int mem_size;
@@ -84,7 +102,10 @@ int stream_thread(SceSize args, void *argp){
 	sceKernelWaitSema(async_mutex, 1, NULL);
 	for (;;){
 		sceDisplayGetFrameBuf(&param, SCE_DISPLAY_SETBUF_NEXTFRAME);
-		mem = encodeARGB(&jpeg_encoder, param.base, param.width, param.height, param.pitch, &mem_size);
+		if (rescale_buffer != NULL){ // Downscaler available
+			rescaleBuffer((uint32_t*)param.base, rescale_buffer, param.width, param.height, param.pitch);
+			mem = encodeARGB(&jpeg_encoder, rescale_buffer, 512, &mem_size);
+		}else mem = encodeARGB(&jpeg_encoder, param.base, param.pitch, &mem_size);
 		sceNetSendto(stream_skt, mem, mem_size, 0, (SceNetSockaddr*)&addrFrom, sizeof(addrFrom));
 	}
 }
@@ -121,6 +142,7 @@ int sceDisplaySetFrameBuf_patched(const SceDisplayFrameBuf *pParam, int sync) {
 		
 		// Initializing JPG encoder
 		isEncoderUnavailable = encoderInit(pParam->width, pParam->height, pParam->pitch, &jpeg_encoder, video_quality);
+		rescale_buffer = (uint32_t*)jpeg_encoder.rescale_buffer;
 		
 		// Initializing Net if encoder is ready
 		if (!isEncoderUnavailable){
@@ -172,7 +194,7 @@ int sceDisplaySetFrameBuf_patched(const SceDisplayFrameBuf *pParam, int sync) {
 					sceNetSetsockopt(stream_skt, SCE_NET_SOL_SOCKET, SCE_NET_SO_SNDBUF, &sndbuf_size, sizeof(sndbuf_size));
 				}
 				sceNetRecvfrom(stream_skt, unused, 8, 0, (SceNetSockaddr*)&addrFrom, &fromLen);
-				sprintf(txt, "%d;%d;%hhu", pParam->pitch, pParam->height, jpeg_encoder.isHwAccelerated);
+				sprintf(txt, "%d;%d;%hhu", (jpeg_encoder.rescale_buffer != NULL) ? 480 : pParam->width, (jpeg_encoder.rescale_buffer != NULL) ? 272 : pParam->height, jpeg_encoder.isHwAccelerated);
 				sceNetSendto(stream_skt, txt, 32, 0, (SceNetSockaddr*)&addrFrom, sizeof(addrFrom));
 				status = SYNC_BROADCAST + stream_type;
 				
@@ -181,8 +203,11 @@ int sceDisplaySetFrameBuf_patched(const SceDisplayFrameBuf *pParam, int sync) {
 				
 				break;
 			case SYNC_BROADCAST:
-				if (loopDrawing == (3 + frameskip)){
-					mem = encodeARGB(&jpeg_encoder, pParam->base, pParam->width, pParam->height, pParam->pitch, &mem_size);
+				if (loopDrawing == (3 + frameskip)){				
+					if (rescale_buffer != NULL){ // Downscaler available
+						rescaleBuffer((uint32_t*)pParam->base, rescale_buffer, pParam->width, pParam->height, pParam->pitch);
+						mem = encodeARGB(&jpeg_encoder, rescale_buffer, 512, &mem_size);
+					}else mem = encodeARGB(&jpeg_encoder, pParam->base, pParam->pitch, &mem_size);
 					sceNetSendto(stream_skt, mem, mem_size, 0, (SceNetSockaddr*)&addrFrom, sizeof(addrFrom));
 					loopDrawing = 0;
 				}else loopDrawing++;
@@ -214,13 +239,13 @@ void checkInput(SceCtrlData *ctrl){
 				case 0:
 					qual_i = (qual_i + 1) % QUALITY_ENTRIES;
 					break;
-				case 3:
+				case 4:
 					frameskip = (frameskip + 1) % 5;
 					break;
-				case 4:
+				case 5:
 					stream_type = (stream_type + 1) % 2;
 					break;
-				case 5:
+				case 6:
 					encoderSetQuality(&jpeg_encoder, qual_val[qual_i]);
 					status = LISTENING;
 					break;
@@ -261,6 +286,11 @@ int sceCtrlReadBufferPositive2_patched(int port, SceCtrlData *ctrl, int count) {
 	return ret;
 }
 
+int sceSysmoduleUnloadModule_patched(SceSysmoduleModuleId module) {
+	if (module == SCE_SYSMODULE_NET) return 0;
+	else return TAI_CONTINUE(int, ref[9], module);
+}
+
 void _start() __attribute__ ((weak, alias ("module_start")));
 int module_start(SceSize argc, const void *args) {
 	
@@ -278,7 +308,7 @@ int module_start(SceSize argc, const void *args) {
 	if (stream_thread_id >= 0) sceKernelStartThread(stream_thread_id, 0, NULL);
 	
 	// Initializing taipool mempool for dynamic memory managing
-	taipool_init(0x400000);
+	taipool_init(0x500000);
 	
 	// Hooking needed functions
 	hookFunction(0xB8D7B3FB, scePowerSetBusClockFrequency_patched);
@@ -290,6 +320,7 @@ int module_start(SceSize argc, const void *args) {
 	hookFunction(0x15F81E8C, sceCtrlPeekBufferPositive2_patched);
 	hookFunction(0x67E7AB83, sceCtrlReadBufferPositive_patched);
 	hookFunction(0xC4226A3E, sceCtrlReadBufferPositive2_patched);
+	hookFunction(0x31D87805, sceSysmoduleUnloadModule_patched);
 	
 	return SCE_KERNEL_START_SUCCESS;
 }

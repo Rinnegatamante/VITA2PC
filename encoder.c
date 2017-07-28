@@ -44,17 +44,24 @@ void encoderSetQuality(encoder* enc, uint8_t video_quality){
 }
 
 SceUID encoderInit(int width, int height, int pitch, encoder* enc, uint8_t video_quality){
-	enc->in_size = ALIGN((width*height)<<1, 0x100);
-	enc->out_size = ALIGN(width*height, 0x100);
+	enc->in_size = ALIGN((width*height)<<1, 0x10);
+	enc->out_size = (pitch*height)<<2;
+	enc->rescale_buffer = NULL;
 	uint32_t tempbuf_size = ALIGN(enc->in_size + enc->out_size,0x40000);
 	enc->memblocks[0] = sceKernelAllocMemBlock("encoderBuffer", SCE_KERNEL_MEMBLOCK_TYPE_USER_CDRAM_RW, tempbuf_size, NULL);
 	if (enc->memblocks[0] < 0){ // Not enough vram, will use libjpeg-turbo
+		if (width == 960 && height == 544){
+			width = 480;
+			height = 272;
+			pitch = 512;
+			enc->rescale_buffer = malloc(pitch*height<<2);
+		}
 		enc->isHwAccelerated = 0;
-		enc->tempbuf_addr = malloc(tempbuf_size);
+		enc->tempbuf_addr = malloc(enc->out_size);
 		enc->out_size = tempbuf_size;
 		cinfo.err = jpeg_std_error(&jerr);
 		jpeg_create_compress(&cinfo);
-		cinfo.image_width = pitch;
+		cinfo.image_width = width;
 		enc->rowstride = pitch<<2;
 		cinfo.image_height = height;
 		cinfo.input_components = 4;
@@ -71,8 +78,14 @@ SceUID encoderInit(int width, int height, int pitch, encoder* enc, uint8_t video
 			return enc->memblocks[1];
 		}
 		sceKernelGetMemBlockBase(enc->memblocks[1], &enc->context);
-		sceJpegEncoderInit(enc->context, width, height, SCE_JPEGENC_PIXELFORMAT_YCBCR420 | SCE_JPEGENC_PIXELFORMAT_CSC_ARGB_YCBCR, enc->tempbuf_addr + enc->in_size, enc->out_size);
-		sceJpegEncoderSetValidRegion(enc->context, width, height);
+		if (width == 960 && height == 544){ // Setup downscaler for better framerate
+			enc->rescale_buffer = enc->tempbuf_addr + enc->in_size;
+			sceJpegEncoderInit(enc->context, 480, 272, SCE_JPEGENC_PIXELFORMAT_YCBCR420 | SCE_JPEGENC_PIXELFORMAT_CSC_ARGB_YCBCR, enc->tempbuf_addr + enc->in_size, enc->out_size);
+			sceJpegEncoderSetValidRegion(enc->context, 480, 272);
+		}else{
+			sceJpegEncoderInit(enc->context, width, height, SCE_JPEGENC_PIXELFORMAT_YCBCR420 | SCE_JPEGENC_PIXELFORMAT_CSC_ARGB_YCBCR, enc->tempbuf_addr + enc->in_size, enc->out_size);
+			sceJpegEncoderSetValidRegion(enc->context, width, height);
+		}
 	}
 	encoderSetQuality(enc, video_quality);
 	return 0;
@@ -86,10 +99,11 @@ void encoderTerm(encoder* enc){
 	}else{
 		jpeg_destroy_compress(&cinfo);
 		free(enc->tempbuf_addr);
+		if (enc->rescale_buffer != NULL) free(enc->rescale_buffer);
 	}
 }
 
-void* encodeARGB(encoder* enc, void* buffer, int width, int height, int pitch, int* outSize){
+void* encodeARGB(encoder* enc, void* buffer, int pitch, int* outSize){
 	if (enc->isHwAccelerated){
 		sceJpegEncoderCsc(enc->context, enc->tempbuf_addr, buffer, pitch, SCE_JPEGENC_PIXELFORMAT_ARGB8888);
 		*outSize = sceJpegEncoderEncode(enc->context, enc->tempbuf_addr);
