@@ -48,6 +48,7 @@ static uint8_t enforce_sw = 0;
 static uint8_t skip_net_init = 0;
 static uint32_t mempool_size = 0x500000;
 static char titleid[16];
+static uint32_t thd_priority = 0x40;
 
 // Config Menu Renderer
 void drawConfigMenu(){
@@ -300,17 +301,22 @@ int module_start(SceSize argc, const void *args) {
 	if (strncmp(titleid, "PCSE00491", 9) == 0){ // Minecraft (USA)
 		mempool_size = 0x200000;
 		skip_net_init = 1;
-	}else if (strncmp(titleid, "PCSF00178", 9) == 0){ // Assassin's Creed III: Liberation (EUR)
+	}else if (strncmp(titleid, "PCSF00178", 9) == 0){ // Assassin's Creed III: Liberation (AUS)
 		mempool_size = 0x200000;
 		skip_net_init = 1;
 		// TODO: Game disables net feature for single player, that must be prevented
+	}else if (strncmp(titleid, "PCSF00176", 9) == 0){ // Soul Sacrifice (AUS)
+		mempool_size = 0x200000;
+		thd_priority = 0xA0;
+	}else if (strncmp(titleid, "PCSB00183", 9) == 0){ // Need for Speed: Most Wanted (EUR)
+		thd_priority = 0xA0;
 	}
 	
 	// Mutex for asynchronous streaming triggering
 	async_mutex = sceKernelCreateSema("async_mutex", 0, 0, 1, NULL);
 	
 	// Starting secondary thread for asynchronous streaming
-	stream_thread_id = sceKernelCreateThread("stream_thread", stream_thread, 0x40, 0x200000, 0, 0, NULL);
+	stream_thread_id = sceKernelCreateThread("stream_thread", stream_thread, thd_priority, 0x100000, 0, 0, NULL);
 	if (stream_thread_id >= 0) sceKernelStartThread(stream_thread_id, 0, NULL);
 	
 	// Initializing taipool mempool for dynamic memory managing
