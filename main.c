@@ -45,7 +45,9 @@ static uint8_t stream_type = 1;
 static char* menu[] = {"Video Quality: ", "Video Codec: MJPEG", "Hardware Acceleration: ", "Downscaler: ","Frame Skip: ", "Stream Type: ", "Start Screen Streaming"};
 static uint32_t* rescale_buffer = NULL;
 static uint8_t enforce_sw = 0;
+static uint8_t skip_net_init = 0;
 static uint32_t mempool_size = 0x500000;
+static char titleid[16];
 
 // Config Menu Renderer
 void drawConfigMenu(){
@@ -191,7 +193,7 @@ int sceDisplaySetFrameBuf_patched(const SceDisplayFrameBuf *pParam, int sync) {
 		rescale_buffer = (uint32_t*)jpeg_encoder.rescale_buffer;
 		
 		// Initializing Net if encoder is ready
-		if (!isEncoderUnavailable){
+		if ((!isEncoderUnavailable) || (skip_net_init)){
 			isNetAvailable = (SceUID)malloc(NET_SIZE);
 			if (isNetAvailable){
 				sceSysmoduleLoadModule(SCE_SYSMODULE_NET);
@@ -220,8 +222,8 @@ int sceDisplaySetFrameBuf_patched(const SceDisplayFrameBuf *pParam, int sync) {
 	
 	if (status == NOT_TRIGGERED){
 		if (isEncoderUnavailable) drawStringF(5,5, "ERROR: encoderInit -> 0x%X", isEncoderUnavailable);
-		else if (!isNetAvailable) drawString(5,5, "ERROR: malloc(NET_SIZE) -> NULL");
-	}else if ((!isEncoderUnavailable) && (isNetAvailable)){
+		else if ((!isNetAvailable) && (!skip_net_init)) drawString(5,5, "ERROR: malloc(NET_SIZE) -> NULL");
+	}else if ((!isEncoderUnavailable) && (isNetAvailable || skip_net_init)){
 		char txt[32], unused[256];
 		int sndbuf_size;
 		int mem_size;
@@ -229,6 +231,7 @@ int sceDisplaySetFrameBuf_patched(const SceDisplayFrameBuf *pParam, int sync) {
 		switch (status){
 			case CONFIG_MENU:
 				drawStringF(5,5, "IP: %s", vita_ip);
+				drawStringF(5,25, "Title ID: %s", titleid);
 				drawString(5, 50, "Standalone ScreenStream v.0.1 Beta - CONFIG MENU");
 				drawConfigMenu();
 				break;
@@ -289,18 +292,17 @@ int module_start(SceSize argc, const void *args) {
 	scePowerSetGpuXbarClockFrequency(166);
 	
 	// Checking if game is blacklisted
-	char titleid[16];
-	sceAppMgrAppParamGetString(0, 12, titleid , 256);
-	
-	//if (strcmp(titleid, "PCSF00178") == 0){ // Soul Sacrifice (AUS)
-		//enforce_sw = 1;
-	//}
+	sceAppMgrAppParamGetString(0, 12, titleid , 256);	
+	if (strncmp(titleid, "PCSE00491", 9) == 0){ // Minecraft (USA)
+		mempool_size = 0x200000;
+		skip_net_init = 1;
+	}
 	
 	// Mutex for asynchronous streaming triggering
 	async_mutex = sceKernelCreateSema("async_mutex", 0, 0, 1, NULL);
 	
 	// Starting secondary thread for asynchronous streaming
-	stream_thread_id = sceKernelCreateThread("stream_thread", stream_thread, 0x40, 0x400000, 0, 0, NULL);
+	stream_thread_id = sceKernelCreateThread("stream_thread", stream_thread, 0x40, 0x200000, 0, 0, NULL);
 	if (stream_thread_id >= 0) sceKernelStartThread(stream_thread_id, 0, NULL);
 	
 	// Initializing taipool mempool for dynamic memory managing
