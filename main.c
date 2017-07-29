@@ -6,7 +6,7 @@
 #include "renderer.h"
 #include "encoder.h"
 
-#define HOOKS_NUM       10
+#define HOOKS_NUM       6
 #define MENU_ENTRIES    7
 #define QUALITY_ENTRIES 5
 
@@ -44,6 +44,8 @@ static uint8_t frameskip = 0;
 static uint8_t stream_type = 1;
 static char* menu[] = {"Video Quality: ", "Video Codec: MJPEG", "Hardware Acceleration: ", "Downscaler: ","Frame Skip: ", "Stream Type: ", "Start Screen Streaming"};
 static uint32_t* rescale_buffer = NULL;
+static uint8_t enforce_sw = 0;
+static uint32_t mempool_size = 0x500000;
 
 // Config Menu Renderer
 void drawConfigMenu(){
@@ -131,6 +133,50 @@ int scePowerSetArmClockFrequency_patched(int freq) {
 	return SetGenericClockFrequency(444, ref[3]);
 }
 
+// Checking buttons startup/closeup
+void checkInput(SceCtrlData *ctrl){
+	SceDisplayFrameBuf param;
+	if (status != NOT_TRIGGERED && status < SYNC_BROADCAST){
+		if ((ctrl->buttons & SCE_CTRL_DOWN) && (!(old_buttons & SCE_CTRL_DOWN))){
+			cfg_i++;
+			if (cfg_i >= MENU_ENTRIES) cfg_i = 0;
+		}else if ((ctrl->buttons & SCE_CTRL_UP) && (!(old_buttons & SCE_CTRL_UP))){
+			cfg_i--;
+			if (cfg_i < 0 ) cfg_i = MENU_ENTRIES-1;
+		}else if ((ctrl->buttons & SCE_CTRL_CROSS) && (!(old_buttons & SCE_CTRL_CROSS))){
+			switch (cfg_i){
+				case 0:
+					qual_i = (qual_i + 1) % QUALITY_ENTRIES;
+					break;
+				case 3:
+					param.size = sizeof(SceDisplayFrameBuf);
+					sceDisplayGetFrameBuf(&param, SCE_DISPLAY_SETBUF_NEXTFRAME);
+					if (param.width == 960 && param.height == 544) encoderSetRescaler(&jpeg_encoder, (rescale_buffer == NULL) ? 1 : 0);
+					rescale_buffer = jpeg_encoder.rescale_buffer;
+					break;
+				case 4:
+					frameskip = (frameskip + 1) % 5;
+					break;
+				case 5:
+					stream_type = (stream_type + 1) % 2;
+					break;
+				case 6:
+					encoderSetQuality(&jpeg_encoder, qual_val[qual_i]);
+					status = LISTENING;
+					break;
+				default:
+					break;
+			}
+		}else if ((ctrl->buttons & SCE_CTRL_TRIANGLE) && (!(old_buttons & SCE_CTRL_TRIANGLE))){
+			status = NOT_TRIGGERED;
+		}
+	}else if ((ctrl->buttons & SCE_CTRL_LTRIGGER) && (ctrl->buttons & SCE_CTRL_SELECT)){
+		status = CONFIG_MENU;
+	}
+	old_buttons = ctrl->buttons;
+	if (status != NOT_TRIGGERED && status < SYNC_BROADCAST) ctrl->buttons = 0x0; // Nullifing input
+}
+
 // This can be considered as our main loop
 int sceDisplaySetFrameBuf_patched(const SceDisplayFrameBuf *pParam, int sync) {
 	
@@ -141,7 +187,7 @@ int sceDisplaySetFrameBuf_patched(const SceDisplayFrameBuf *pParam, int sync) {
 		setTextColor(0x00FFFFFF);
 		
 		// Initializing JPG encoder
-		isEncoderUnavailable = encoderInit(pParam->width, pParam->height, pParam->pitch, &jpeg_encoder, video_quality);
+		isEncoderUnavailable = encoderInit(pParam->width, pParam->height, pParam->pitch, &jpeg_encoder, video_quality, enforce_sw);
 		rescale_buffer = (uint32_t*)jpeg_encoder.rescale_buffer;
 		
 		// Initializing Net if encoder is ready
@@ -168,6 +214,9 @@ int sceDisplaySetFrameBuf_patched(const SceDisplayFrameBuf *pParam, int sync) {
 	}
 	
 	updateFramebuf(pParam);
+	SceCtrlData pad;
+	sceCtrlPeekBufferPositive(0, &pad, 1);
+	checkInput(&pad);
 	
 	if (status == NOT_TRIGGERED){
 		if (isEncoderUnavailable) drawStringF(5,5, "ERROR: encoderInit -> 0x%X", isEncoderUnavailable);
@@ -219,83 +268,15 @@ int sceDisplaySetFrameBuf_patched(const SceDisplayFrameBuf *pParam, int sync) {
 	
 	#ifndef NO_DEBUG
 	setTextColor(0x00FFFFFF);
-	drawStringF(5, 400, "taipool free space: %lu KBs", (taipool_get_free_space()>>10));
+	drawStringF(5, 100, "taipool free space: %lu KBs", (taipool_get_free_space()>>10));
 	#endif
 	
 	return TAI_CONTINUE(int, ref[4], pParam, sync);
 }
 
-// Checking buttons startup/closeup
-void checkInput(SceCtrlData *ctrl){
-	SceDisplayFrameBuf param;
-	if (status != NOT_TRIGGERED && status < SYNC_BROADCAST){
-		if ((ctrl->buttons & SCE_CTRL_DOWN) && (!(old_buttons & SCE_CTRL_DOWN))){
-			cfg_i++;
-			if (cfg_i >= MENU_ENTRIES) cfg_i = 0;
-		}else if ((ctrl->buttons & SCE_CTRL_UP) && (!(old_buttons & SCE_CTRL_UP))){
-			cfg_i--;
-			if (cfg_i < 0 ) cfg_i = MENU_ENTRIES-1;
-		}else if ((ctrl->buttons & SCE_CTRL_CROSS) && (!(old_buttons & SCE_CTRL_CROSS))){
-			switch (cfg_i){
-				case 0:
-					qual_i = (qual_i + 1) % QUALITY_ENTRIES;
-					break;
-				case 3:
-					param.size = sizeof(SceDisplayFrameBuf);
-					sceDisplayGetFrameBuf(&param, SCE_DISPLAY_SETBUF_NEXTFRAME);
-					if (param.width == 960 && param.height == 544) encoderSetRescaler(&jpeg_encoder, (rescale_buffer == NULL) ? 1 : 0);
-					rescale_buffer = jpeg_encoder.rescale_buffer;
-					break;
-				case 4:
-					frameskip = (frameskip + 1) % 5;
-					break;
-				case 5:
-					stream_type = (stream_type + 1) % 2;
-					break;
-				case 6:
-					encoderSetQuality(&jpeg_encoder, qual_val[qual_i]);
-					status = LISTENING;
-					break;
-				default:
-					break;
-			}
-		}else if ((ctrl->buttons & SCE_CTRL_TRIANGLE) && (!(old_buttons & SCE_CTRL_TRIANGLE))){
-			status = NOT_TRIGGERED;
-		}
-	}else if ((ctrl->buttons & SCE_CTRL_LTRIGGER) && (ctrl->buttons & SCE_CTRL_SELECT)){
-		status = CONFIG_MENU;
-	}
-	old_buttons = ctrl->buttons;
-	if (status != NOT_TRIGGERED && status < SYNC_BROADCAST) ctrl->buttons = 0x0; // Nullifing input
-}
-
-int sceCtrlPeekBufferPositive_patched(int port, SceCtrlData *ctrl, int count) {
-	int ret = TAI_CONTINUE(int, ref[5], port, ctrl, count);
-	checkInput(ctrl);
-	return ret;
-}
-
-int sceCtrlPeekBufferPositive2_patched(int port, SceCtrlData *ctrl, int count) {
-	int ret = TAI_CONTINUE(int, ref[6], port, ctrl, count);
-	checkInput(ctrl);
-	return ret;
-}
-
-int sceCtrlReadBufferPositive_patched(int port, SceCtrlData *ctrl, int count) {
-	int ret = TAI_CONTINUE(int, ref[7], port, ctrl, count);
-	checkInput(ctrl);
-	return ret;
-}
-
-int sceCtrlReadBufferPositive2_patched(int port, SceCtrlData *ctrl, int count) {
-	int ret = TAI_CONTINUE(int, ref[8], port, ctrl, count);
-	checkInput(ctrl);
-	return ret;
-}
-
 int sceSysmoduleUnloadModule_patched(SceSysmoduleModuleId module) {
 	if (module == SCE_SYSMODULE_NET) return 0;
-	else return TAI_CONTINUE(int, ref[9], module);
+	else return TAI_CONTINUE(int, ref[5], module);
 }
 
 void _start() __attribute__ ((weak, alias ("module_start")));
@@ -307,6 +288,14 @@ int module_start(SceSize argc, const void *args) {
 	scePowerSetGpuClockFrequency(222);
 	scePowerSetGpuXbarClockFrequency(166);
 	
+	// Checking if game is blacklisted
+	char titleid[16];
+	sceAppMgrAppParamGetString(0, 12, titleid , 256);
+	
+	//if (strcmp(titleid, "PCSF00178") == 0){ // Soul Sacrifice (AUS)
+		//enforce_sw = 1;
+	//}
+	
 	// Mutex for asynchronous streaming triggering
 	async_mutex = sceKernelCreateSema("async_mutex", 0, 0, 1, NULL);
 	
@@ -315,7 +304,7 @@ int module_start(SceSize argc, const void *args) {
 	if (stream_thread_id >= 0) sceKernelStartThread(stream_thread_id, 0, NULL);
 	
 	// Initializing taipool mempool for dynamic memory managing
-	taipool_init(0x500000);
+	taipool_init(mempool_size);
 	
 	// Hooking needed functions
 	hookFunction(0xB8D7B3FB, scePowerSetBusClockFrequency_patched);
@@ -323,10 +312,6 @@ int module_start(SceSize argc, const void *args) {
 	hookFunction(0xA7739DBE, scePowerSetGpuXbarClockFrequency_patched);
 	hookFunction(0x74DB5AE5, scePowerSetArmClockFrequency_patched);
 	hookFunction(0x7A410B64, sceDisplaySetFrameBuf_patched);
-	hookFunction(0xA9C3CED6, sceCtrlPeekBufferPositive_patched);
-	hookFunction(0x15F81E8C, sceCtrlPeekBufferPositive2_patched);
-	hookFunction(0x67E7AB83, sceCtrlReadBufferPositive_patched);
-	hookFunction(0xC4226A3E, sceCtrlReadBufferPositive2_patched);
 	hookFunction(0x31D87805, sceSysmoduleUnloadModule_patched);
 	
 	return SCE_KERNEL_START_SUCCESS;

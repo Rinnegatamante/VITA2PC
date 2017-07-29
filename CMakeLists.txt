@@ -48,6 +48,8 @@ target_link_libraries(SA_ScreenStream
   SceSysmodule_stub
   ScePower_stub
   SceJpegEnc_stub
+  SceAppMgr_stub
+  SceCtrl_stub
 )
 
 set_target_properties(SA_ScreenStream

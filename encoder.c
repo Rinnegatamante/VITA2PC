@@ -43,12 +43,13 @@ void encoderSetQuality(encoder* enc, uint8_t video_quality){
 	}
 }
 
-SceUID encoderInit(int width, int height, int pitch, encoder* enc, uint8_t video_quality){
+SceUID encoderInit(int width, int height, int pitch, encoder* enc, uint8_t video_quality, uint8_t enforce_sw){
 	enc->in_size = ALIGN((width*height)<<1, 0x10);
 	enc->out_size = (pitch*height)<<2;
 	enc->rescale_buffer = NULL;
 	uint32_t tempbuf_size = ALIGN(enc->in_size + enc->out_size,0x40000);
-	enc->gpublock = sceKernelAllocMemBlock("encoderBuffer", SCE_KERNEL_MEMBLOCK_TYPE_USER_CDRAM_RW, tempbuf_size, NULL);
+	if (enforce_sw) enc->gpublock = -1;
+	else enc->gpublock = sceKernelAllocMemBlock("encoderBuffer", SCE_KERNEL_MEMBLOCK_TYPE_USER_CDRAM_RW, tempbuf_size, NULL);
 	if (enc->gpublock < 0){ // Not enough vram, will use libjpeg-turbo
 		if (width == 960 && height == 544){
 			width = 480;
