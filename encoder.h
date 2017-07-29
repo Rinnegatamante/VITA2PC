@@ -24,7 +24,7 @@
 
 typedef struct encoder{
 	uint8_t isHwAccelerated;
-	SceUID memblocks[2];
+	SceUID gpublock;
 	void* tempbuf_addr;
 	void* rescale_buffer;
 	uint32_t in_size;
@@ -37,5 +37,6 @@ SceUID encoderInit(int width, int height, int pitch, encoder* enc, uint8_t video
 void encoderTerm(encoder* enc);
 void* encodeARGB(encoder* enc, void* buffer, int pitch, int* outSize);
 void encoderSetQuality(encoder* enc, uint8_t video_quality);
+void encoderSetRescaler(encoder* enc, uint8_t use);
 
 #endif

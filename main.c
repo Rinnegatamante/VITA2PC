@@ -227,6 +227,7 @@ int sceDisplaySetFrameBuf_patched(const SceDisplayFrameBuf *pParam, int sync) {
 
 // Checking buttons startup/closeup
 void checkInput(SceCtrlData *ctrl){
+	SceDisplayFrameBuf param;
 	if (status != NOT_TRIGGERED && status < SYNC_BROADCAST){
 		if ((ctrl->buttons & SCE_CTRL_DOWN) && (!(old_buttons & SCE_CTRL_DOWN))){
 			cfg_i++;
@@ -238,6 +239,12 @@ void checkInput(SceCtrlData *ctrl){
 			switch (cfg_i){
 				case 0:
 					qual_i = (qual_i + 1) % QUALITY_ENTRIES;
+					break;
+				case 3:
+					param.size = sizeof(SceDisplayFrameBuf);
+					sceDisplayGetFrameBuf(&param, SCE_DISPLAY_SETBUF_NEXTFRAME);
+					if (param.width == 960 && param.height == 544) encoderSetRescaler(&jpeg_encoder, (rescale_buffer == NULL) ? 1 : 0);
+					rescale_buffer = jpeg_encoder.rescale_buffer;
 					break;
 				case 4:
 					frameskip = (frameskip + 1) % 5;

@@ -48,8 +48,8 @@ SceUID encoderInit(int width, int height, int pitch, encoder* enc, uint8_t video
 	enc->out_size = (pitch*height)<<2;
 	enc->rescale_buffer = NULL;
 	uint32_t tempbuf_size = ALIGN(enc->in_size + enc->out_size,0x40000);
-	enc->memblocks[0] = sceKernelAllocMemBlock("encoderBuffer", SCE_KERNEL_MEMBLOCK_TYPE_USER_CDRAM_RW, tempbuf_size, NULL);
-	if (enc->memblocks[0] < 0){ // Not enough vram, will use libjpeg-turbo
+	enc->gpublock = sceKernelAllocMemBlock("encoderBuffer", SCE_KERNEL_MEMBLOCK_TYPE_USER_CDRAM_RW, tempbuf_size, NULL);
+	if (enc->gpublock < 0){ // Not enough vram, will use libjpeg-turbo
 		if (width == 960 && height == 544){
 			width = 480;
 			height = 272;
@@ -71,13 +71,8 @@ SceUID encoderInit(int width, int height, int pitch, encoder* enc, uint8_t video
 		jpeg_set_colorspace(&cinfo, JCS_YCbCr);
 	}else{ // Will use sceJpegEnc
 		enc->isHwAccelerated = 1;
-		sceKernelGetMemBlockBase(enc->memblocks[0], &enc->tempbuf_addr);
-		enc->memblocks[1] = sceKernelAllocMemBlock("contextBuffer", SCE_KERNEL_MEMBLOCK_TYPE_USER_RW, ALIGN(sceJpegEncoderGetContextSize(),0x40000), NULL);
-		if (enc->memblocks[1] < 0){
-			sceKernelFreeMemBlock(enc->memblocks[0]);
-			return enc->memblocks[1];
-		}
-		sceKernelGetMemBlockBase(enc->memblocks[1], &enc->context);
+		sceKernelGetMemBlockBase(enc->gpublock, &enc->tempbuf_addr);
+		enc->context = malloc(ALIGN(sceJpegEncoderGetContextSize(),0x40000));
 		if (width == 960 && height == 544){ // Setup downscaler for better framerate
 			enc->rescale_buffer = enc->tempbuf_addr + enc->in_size;
 			sceJpegEncoderInit(enc->context, 480, 272, SCE_JPEGENC_PIXELFORMAT_YCBCR420 | SCE_JPEGENC_PIXELFORMAT_CSC_ARGB_YCBCR, enc->tempbuf_addr + enc->in_size, enc->out_size);
@@ -91,11 +86,49 @@ SceUID encoderInit(int width, int height, int pitch, encoder* enc, uint8_t video
 	return 0;
 }
 
+void encoderSetRescaler(encoder* enc, uint8_t use){
+	if (use){
+		if (enc->isHwAccelerated){
+			enc->rescale_buffer = enc->tempbuf_addr + enc->in_size;
+			sceJpegEncoderEnd(enc->context);
+			sceJpegEncoderInit(enc->context, 480, 272, SCE_JPEGENC_PIXELFORMAT_YCBCR420 | SCE_JPEGENC_PIXELFORMAT_CSC_ARGB_YCBCR, enc->tempbuf_addr + enc->in_size, enc->out_size);
+			sceJpegEncoderSetValidRegion(enc->context, 480, 272);
+		}else{
+			cinfo.image_width = 480;
+			enc->rowstride = 2048;
+			cinfo.image_height = 272;
+			cinfo.input_components = 4;
+			cinfo.in_color_space = JCS_EXT_RGBA;
+			jpeg_set_defaults(&cinfo);
+			cinfo.dct_method = JDCT_FLOAT;
+			jpeg_set_colorspace(&cinfo, JCS_YCbCr);
+			enc->rescale_buffer = malloc(491520);
+		}
+	}else{
+		if (enc->isHwAccelerated){
+			enc->rescale_buffer = NULL;
+			sceJpegEncoderEnd(enc->context);
+			sceJpegEncoderInit(enc->context, 960, 544, SCE_JPEGENC_PIXELFORMAT_YCBCR420 | SCE_JPEGENC_PIXELFORMAT_CSC_ARGB_YCBCR, enc->tempbuf_addr + enc->in_size, enc->out_size);
+			sceJpegEncoderSetValidRegion(enc->context, 960, 544);
+		}else{
+			cinfo.image_width = 960;
+			enc->rowstride = 4096;
+			cinfo.image_height = 544;
+			cinfo.input_components = 4;
+			cinfo.in_color_space = JCS_EXT_RGBA;
+			jpeg_set_defaults(&cinfo);
+			cinfo.dct_method = JDCT_FLOAT;
+			jpeg_set_colorspace(&cinfo, JCS_YCbCr);
+			free(enc->rescale_buffer);
+			enc->rescale_buffer = NULL;
+		}
+	}
+}
+
 void encoderTerm(encoder* enc){
 	if (enc->isHwAccelerated){
 		sceJpegEncoderEnd(enc->context);
-		sceKernelFreeMemBlock(enc->memblocks[0]);
-		sceKernelFreeMemBlock(enc->memblocks[1]);
+		sceKernelFreeMemBlock(enc->gpublock);
 	}else{
 		jpeg_destroy_compress(&cinfo);
 		free(enc->tempbuf_addr);
