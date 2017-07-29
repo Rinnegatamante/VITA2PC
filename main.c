@@ -6,7 +6,7 @@
 #include "renderer.h"
 #include "encoder.h"
 
-#define HOOKS_NUM       7
+#define HOOKS_NUM       5
 #define MENU_ENTRIES    7
 #define QUALITY_ENTRIES 5
 
@@ -46,9 +46,12 @@ static char* menu[] = {"Video Quality: ", "Video Codec: MJPEG", "Hardware Accele
 static uint32_t* rescale_buffer = NULL;
 static uint8_t enforce_sw = 0;
 static uint8_t skip_net_init = 0;
+static uint8_t delayed_net_init = 0;
 static uint32_t mempool_size = 0x500000;
 static char titleid[16];
-static uint32_t thd_priority = 0x40;
+#ifndef NO_DEBUG
+static int debug = 0;
+#endif
 
 // Config Menu Renderer
 void drawConfigMenu(){
@@ -175,6 +178,28 @@ void checkInput(SceCtrlData *ctrl){
 		}
 	}else if ((ctrl->buttons & SCE_CTRL_LTRIGGER) && (ctrl->buttons & SCE_CTRL_SELECT)){
 		status = CONFIG_MENU;
+		if (delayed_net_init){
+			isNetAvailable = (SceUID)malloc(NET_SIZE);
+			if (isNetAvailable){
+				sceSysmoduleLoadModule(SCE_SYSMODULE_NET);
+				int ret = sceNetShowNetstat();
+				if (ret == SCE_NET_ERROR_ENOTINIT) {
+					SceNetInitParam initparam;
+					initparam.memory = (void*)isNetAvailable;
+					initparam.size = NET_SIZE;
+					initparam.flags = 0;
+					sceNetInit(&initparam);
+				}
+			}
+			delayed_net_init = 0;
+		}
+		if (skip_net_init){
+			sceNetCtlInit();
+			SceNetCtlInfo info;
+			sceNetCtlInetGetInfo(SCE_NETCTL_INFO_GET_IP_ADDRESS, &info);
+			sprintf(vita_ip,"%s",info.ip_address);
+			sceNetInetPton(SCE_NET_AF_INET, info.ip_address, &vita_addr);
+		}
 	}
 	old_buttons = ctrl->buttons;
 	if (status != NOT_TRIGGERED && status < SYNC_BROADCAST) ctrl->buttons = 0x0; // Nullifing input
@@ -194,7 +219,7 @@ int sceDisplaySetFrameBuf_patched(const SceDisplayFrameBuf *pParam, int sync) {
 		rescale_buffer = (uint32_t*)jpeg_encoder.rescale_buffer;
 		
 		// Initializing Net if encoder is ready
-		if ((!isEncoderUnavailable) || (skip_net_init)){
+		if ((!isEncoderUnavailable) && (!skip_net_init)){
 			isNetAvailable = (SceUID)malloc(NET_SIZE);
 			if (isNetAvailable){
 				sceSysmoduleLoadModule(SCE_SYSMODULE_NET);
@@ -243,7 +268,11 @@ int sceDisplaySetFrameBuf_patched(const SceDisplayFrameBuf *pParam, int sync) {
 					addrTo.sin_family = SCE_NET_AF_INET;
 					addrTo.sin_port = sceNetHtons(STREAM_PORT);
 					addrTo.sin_addr.s_addr = vita_addr;
-					sceNetBind(stream_skt, (SceNetSockaddr*)&addrTo, sizeof(addrTo));			
+					debug = sceNetBind(stream_skt, (SceNetSockaddr*)&addrTo, sizeof(addrTo));
+					if (debug < 0){
+						status = NOT_TRIGGERED;
+						return TAI_CONTINUE(int, ref[4], pParam, sync);
+					}
 					sceNetSetsockopt(stream_skt, SCE_NET_SOL_SOCKET, SCE_NET_SO_SNDBUF, &sndbuf_size, sizeof(sndbuf_size));
 				}
 				sceNetRecvfrom(stream_skt, unused, 8, 0, (SceNetSockaddr*)&addrFrom, &fromLen);
@@ -273,18 +302,10 @@ int sceDisplaySetFrameBuf_patched(const SceDisplayFrameBuf *pParam, int sync) {
 	#ifndef NO_DEBUG
 	setTextColor(0x00FFFFFF);
 	drawStringF(5, 100, "taipool free space: %lu KBs", (taipool_get_free_space()>>10));
+	drawStringF(5, 120, "Debug: 0x%X", debug);
 	#endif
 	
 	return TAI_CONTINUE(int, ref[4], pParam, sync);
-}
-
-int sceSysmoduleUnloadModule_patched(SceSysmoduleModuleId module) {
-	if (module == SCE_SYSMODULE_NET) return 0;
-	else return TAI_CONTINUE(int, ref[5], module);
-}
-
-int sceNetTerm_patched(void) {
-	return 0;
 }
 
 void _start() __attribute__ ((weak, alias ("module_start")));
@@ -301,22 +322,19 @@ int module_start(SceSize argc, const void *args) {
 	if (strncmp(titleid, "PCSE00491", 9) == 0){ // Minecraft (USA)
 		mempool_size = 0x200000;
 		skip_net_init = 1;
-	}else if (strncmp(titleid, "PCSF00178", 9) == 0){ // Assassin's Creed III: Liberation (AUS)
+	}else if (strncmp(titleid, "PCSB00074", 9) == 0){ // Assassin's Creed III: Liberation (AUS)
 		mempool_size = 0x200000;
 		skip_net_init = 1;
 		// TODO: Game disables net feature for single player, that must be prevented
-	}else if (strncmp(titleid, "PCSF00176", 9) == 0){ // Soul Sacrifice (AUS)
+	}else if (strncmp(titleid, "PCSF00178", 9) == 0){ // Soul Sacrifice (AUS)
 		mempool_size = 0x200000;
-		thd_priority = 0xA0;
-	}else if (strncmp(titleid, "PCSB00183", 9) == 0){ // Need for Speed: Most Wanted (EUR)
-		thd_priority = 0xA0;
 	}
-	
+		
 	// Mutex for asynchronous streaming triggering
 	async_mutex = sceKernelCreateSema("async_mutex", 0, 0, 1, NULL);
 	
 	// Starting secondary thread for asynchronous streaming
-	stream_thread_id = sceKernelCreateThread("stream_thread", stream_thread, thd_priority, 0x100000, 0, 0, NULL);
+	stream_thread_id = sceKernelCreateThread("stream_thread", stream_thread, 0xA0, 0x100000, 0, 0, NULL);
 	if (stream_thread_id >= 0) sceKernelStartThread(stream_thread_id, 0, NULL);
 	
 	// Initializing taipool mempool for dynamic memory managing
@@ -328,10 +346,7 @@ int module_start(SceSize argc, const void *args) {
 	hookFunction(0xA7739DBE, scePowerSetGpuXbarClockFrequency_patched);
 	hookFunction(0x74DB5AE5, scePowerSetArmClockFrequency_patched);
 	hookFunction(0x7A410B64, sceDisplaySetFrameBuf_patched);
-	if (strncmp(titleid, "PCSB0074", 9) == 0){
-		hookFunction(0x31D87805, sceSysmoduleUnloadModule_patched);
-		hookFunction(0xEA3CC286, sceNetTerm_patched);
-	}
+	
 	return SCE_KERNEL_START_SUCCESS;
 }
 
