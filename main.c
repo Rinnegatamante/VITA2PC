@@ -6,7 +6,7 @@
 #include "renderer.h"
 #include "encoder.h"
 
-#define HOOKS_NUM       6
+#define HOOKS_NUM       7
 #define MENU_ENTRIES    7
 #define QUALITY_ENTRIES 5
 
@@ -189,7 +189,7 @@ int sceDisplaySetFrameBuf_patched(const SceDisplayFrameBuf *pParam, int sync) {
 		setTextColor(0x00FFFFFF);
 		
 		// Initializing JPG encoder
-		isEncoderUnavailable = encoderInit(pParam->width, pParam->height, pParam->pitch, &jpeg_encoder, video_quality, enforce_sw);
+		isEncoderUnavailable = encoderInit(pParam->width, pParam->height, pParam->pitch, &jpeg_encoder, video_quality, enforce_sw, 0);
 		rescale_buffer = (uint32_t*)jpeg_encoder.rescale_buffer;
 		
 		// Initializing Net if encoder is ready
@@ -282,6 +282,10 @@ int sceSysmoduleUnloadModule_patched(SceSysmoduleModuleId module) {
 	else return TAI_CONTINUE(int, ref[5], module);
 }
 
+int sceNetTerm_patched(void) {
+	return 0;
+}
+
 void _start() __attribute__ ((weak, alias ("module_start")));
 int module_start(SceSize argc, const void *args) {
 	
@@ -296,6 +300,10 @@ int module_start(SceSize argc, const void *args) {
 	if (strncmp(titleid, "PCSE00491", 9) == 0){ // Minecraft (USA)
 		mempool_size = 0x200000;
 		skip_net_init = 1;
+	}else if (strncmp(titleid, "PCSF00178", 9) == 0){ // Assassin's Creed III: Liberation (EUR)
+		mempool_size = 0x200000;
+		skip_net_init = 1;
+		// TODO: Game disables net feature for single player, that must be prevented
 	}
 	
 	// Mutex for asynchronous streaming triggering
@@ -314,8 +322,10 @@ int module_start(SceSize argc, const void *args) {
 	hookFunction(0xA7739DBE, scePowerSetGpuXbarClockFrequency_patched);
 	hookFunction(0x74DB5AE5, scePowerSetArmClockFrequency_patched);
 	hookFunction(0x7A410B64, sceDisplaySetFrameBuf_patched);
-	hookFunction(0x31D87805, sceSysmoduleUnloadModule_patched);
-	
+	if (strncmp(titleid, "PCSB0074", 9) == 0){
+		hookFunction(0x31D87805, sceSysmoduleUnloadModule_patched);
+		hookFunction(0xEA3CC286, sceNetTerm_patched);
+	}
 	return SCE_KERNEL_START_SUCCESS;
 }
 

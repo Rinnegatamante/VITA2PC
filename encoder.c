@@ -34,24 +34,31 @@
 struct jpeg_error_mgr jerr;
 struct jpeg_compress_struct cinfo;
 
-void encoderSetQuality(encoder* enc, uint8_t video_quality){
+void encoderSetQuality(encoder* enc, uint16_t video_quality){
+	if (video_quality > 0xFF) video_quality = enc->quality;
 	if (enc->isHwAccelerated){
 		sceJpegEncoderSetCompressionRatio(enc->context, video_quality);
 		sceJpegEncoderSetOutputAddr(enc->context, enc->tempbuf_addr + enc->in_size, enc->out_size);
 	}else{
 		jpeg_set_quality(&cinfo, 100 - ((100*video_quality) / 255), TRUE);
 	}
+	enc->quality = video_quality;
 }
 
-SceUID encoderInit(int width, int height, int pitch, encoder* enc, uint8_t video_quality, uint8_t enforce_sw){
-	enc->in_size = ALIGN((width*height)<<1, 0x10);
-	enc->out_size = (pitch*height)<<2;
+SceUID encoderInit(int width, int height, int pitch, encoder* enc, uint16_t video_quality, uint8_t enforce_sw, uint8_t enforce_fullres){
+	if (width == 960 && height == 544){
+		enc->in_size = ALIGN(261120, 0x10);
+		enc->out_size = 557056;
+	}else{
+		enc->in_size = ALIGN((width*height)<<1, 0x10);
+		enc->out_size = (pitch*height)<<2;
+	}
 	enc->rescale_buffer = NULL;
 	uint32_t tempbuf_size = ALIGN(enc->in_size + enc->out_size,0x40000);
 	if (enforce_sw) enc->gpublock = -1;
 	else enc->gpublock = sceKernelAllocMemBlock("encoderBuffer", SCE_KERNEL_MEMBLOCK_TYPE_USER_CDRAM_RW, tempbuf_size, NULL);
 	if (enc->gpublock < 0){ // Not enough vram, will use libjpeg-turbo
-		if (width == 960 && height == 544){
+		if (width == 960 && height == 544 && (!enforce_fullres)){
 			width = 480;
 			height = 272;
 			pitch = 512;
@@ -74,7 +81,7 @@ SceUID encoderInit(int width, int height, int pitch, encoder* enc, uint8_t video
 		enc->isHwAccelerated = 1;
 		sceKernelGetMemBlockBase(enc->gpublock, &enc->tempbuf_addr);
 		enc->context = malloc(ALIGN(sceJpegEncoderGetContextSize(),0x40000));
-		if (width == 960 && height == 544){ // Setup downscaler for better framerate
+		if (width == 960 && height == 544 && (!enforce_fullres)){ // Setup downscaler for better framerate
 			enc->rescale_buffer = enc->tempbuf_addr + enc->in_size;
 			sceJpegEncoderInit(enc->context, 480, 272, SCE_JPEGENC_PIXELFORMAT_YCBCR420 | SCE_JPEGENC_PIXELFORMAT_CSC_ARGB_YCBCR, enc->tempbuf_addr + enc->in_size, enc->out_size);
 			sceJpegEncoderSetValidRegion(enc->context, 480, 272);
@@ -92,25 +99,30 @@ void encoderSetRescaler(encoder* enc, uint8_t use){
 		if (enc->isHwAccelerated){
 			enc->rescale_buffer = enc->tempbuf_addr + enc->in_size;
 			sceJpegEncoderEnd(enc->context);
+			if (enc->gpublock != 0)
 			sceJpegEncoderInit(enc->context, 480, 272, SCE_JPEGENC_PIXELFORMAT_YCBCR420 | SCE_JPEGENC_PIXELFORMAT_CSC_ARGB_YCBCR, enc->tempbuf_addr + enc->in_size, enc->out_size);
 			sceJpegEncoderSetValidRegion(enc->context, 480, 272);
-		}else{
-			cinfo.image_width = 480;
-			enc->rowstride = 2048;
-			cinfo.image_height = 272;
-			cinfo.input_components = 4;
-			cinfo.in_color_space = JCS_EXT_RGBA;
-			jpeg_set_defaults(&cinfo);
-			cinfo.dct_method = JDCT_FLOAT;
-			jpeg_set_colorspace(&cinfo, JCS_YCbCr);
-			enc->rescale_buffer = malloc(491520);
+		}else{		
+			encoderTerm(enc);
+			encoderInit(960, 544, 1024, enc, 0xFFFF, 0, 0);
 		}
 	}else{
 		if (enc->isHwAccelerated){
-			enc->rescale_buffer = NULL;
+			sceKernelFreeMemBlock(enc->gpublock);
+			enc->in_size = ALIGN(1044480, 0x10);
+			enc->out_size = 2228224;
+			uint32_t tempbuf_size = ALIGN(enc->in_size + enc->out_size,0x40000);
+			enc->gpublock = sceKernelAllocMemBlock("encoderBuffer", SCE_KERNEL_MEMBLOCK_TYPE_USER_CDRAM_RW, tempbuf_size, NULL);
+			if (enc->gpublock < 0){
+				encoderTerm(enc);
+				encoderInit(960, 544, 1024, enc, 0xFFFF, 1, 1);
+				return;
+			}
 			sceJpegEncoderEnd(enc->context);
+			sceKernelGetMemBlockBase(enc->gpublock, &enc->tempbuf_addr);
 			sceJpegEncoderInit(enc->context, 960, 544, SCE_JPEGENC_PIXELFORMAT_YCBCR420 | SCE_JPEGENC_PIXELFORMAT_CSC_ARGB_YCBCR, enc->tempbuf_addr + enc->in_size, enc->out_size);
 			sceJpegEncoderSetValidRegion(enc->context, 960, 544);
+			enc->rescale_buffer = NULL;
 		}else{
 			cinfo.image_width = 960;
 			enc->rowstride = 4096;
@@ -129,7 +141,8 @@ void encoderSetRescaler(encoder* enc, uint8_t use){
 void encoderTerm(encoder* enc){
 	if (enc->isHwAccelerated){
 		sceJpegEncoderEnd(enc->context);
-		sceKernelFreeMemBlock(enc->gpublock);
+		if (enc->gpublock >= 0) sceKernelFreeMemBlock(enc->gpublock);
+		free(enc->context);
 	}else{
 		jpeg_destroy_compress(&cinfo);
 		free(enc->tempbuf_addr);
