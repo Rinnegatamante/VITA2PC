@@ -60,22 +60,22 @@ void drawConfigMenu(){
 		(i == cfg_i) ? setTextColor(0x0000FF00) : setTextColor(0x00FFFFFF);
 		switch (i){
 			case 0:
-				drawStringF(5, 70 + i*20, "%s%s", menu[i], qualities[qual_i]);
+				drawStringF(5, 80 + i*20, "%s%s", menu[i], qualities[qual_i]);
 				break;
 			case 2:
-				drawStringF(5, 70 + i*20, "%s%s", menu[i], jpeg_encoder.isHwAccelerated ? "Enabled" : "Disabled");
+				drawStringF(5, 80 + i*20, "%s%s", menu[i], jpeg_encoder.isHwAccelerated ? "Enabled" : "Disabled");
 				break;
 			case 3:
-				drawStringF(5, 70 + i*20, "%s%s", menu[i], (jpeg_encoder.rescale_buffer != NULL) ? "Enabled" : "Disabled");
+				drawStringF(5, 80 + i*20, "%s%s", menu[i], (jpeg_encoder.rescale_buffer != NULL) ? "Enabled" : "Disabled");
 				break;
 			case 4:
-				drawStringF(5, 70 + i*20, "%s%u", menu[i], frameskip);
+				drawStringF(5, 80 + i*20, "%s%u", menu[i], frameskip);
 				break;
 			case 5:
-				drawStringF(5, 70 + i*20, "%s%s", menu[i], stream_type ? "Asynchronous" : "Synchronous");
+				drawStringF(5, 80 + i*20, "%s%s", menu[i], stream_type ? "Asynchronous" : "Synchronous");
 				break;
 			default:
-				drawString(5, 70 + i*20, menu[i]);
+				drawString(5, 80 + i*20, menu[i]);
 				break;
 		}
 	}
@@ -89,14 +89,14 @@ void hookFunction(uint32_t nid, const void* func){
 }
 
 // CPU downscaling function
-void rescaleBuffer(uint32_t* src, uint32_t* dst, int width, int height, int pitch){
+void rescaleBuffer(uint32_t* src, uint32_t* dst, uint32_t pitch){
 	int i,j,z,k,ptr;
 	z=0;
 	k=0;
-	for (i=0;i < height; i+=2){
+	for (i=0;i < 544; i+=2){
 		ptr = pitch * i;
 		z = 512 * (k++);
-		for (j=0;j < width; j+=2){
+		for (j=0;j < 960; j+=2){
 			dst[z++]=src[ptr+j];
 		}
 	}
@@ -111,7 +111,7 @@ int stream_thread(SceSize args, void *argp){
 	for (;;){
 		sceDisplayGetFrameBuf(&param, SCE_DISPLAY_SETBUF_NEXTFRAME);
 		if (rescale_buffer != NULL){ // Downscaler available
-			rescaleBuffer((uint32_t*)param.base, rescale_buffer, param.width, param.height, param.pitch);
+			rescaleBuffer((uint32_t*)param.base, rescale_buffer, param.pitch);
 			mem = encodeARGB(&jpeg_encoder, rescale_buffer, 512, &mem_size);
 		}else mem = encodeARGB(&jpeg_encoder, param.base, param.pitch, &mem_size);
 		sceNetSendto(stream_skt, mem, mem_size, 0, (SceNetSockaddr*)&addrFrom, sizeof(addrFrom));
@@ -183,17 +183,17 @@ void checkInput(SceCtrlData *ctrl){
 			if (isNetAvailable){
 				sceSysmoduleLoadModule(SCE_SYSMODULE_NET);
 				int ret = sceNetShowNetstat();
-				if (ret == SCE_NET_ERROR_ENOTINIT) {
-					SceNetInitParam initparam;
-					initparam.memory = (void*)isNetAvailable;
-					initparam.size = NET_SIZE;
-					initparam.flags = 0;
-					sceNetInit(&initparam);
-				}
+				if (ret != SCE_NET_ERROR_ENOTINIT) sceNetTerm();
+				SceNetInitParam initparam;
+				initparam.memory = (void*)isNetAvailable;
+				initparam.size = NET_SIZE;
+				initparam.flags = 0;
+				sceNetInit(&initparam);
 			}
 			delayed_net_init = 0;
 		}
 		if (skip_net_init){
+			sceSysmoduleLoadModule(SCE_SYSMODULE_NET);
 			sceNetCtlInit();
 			SceNetCtlInfo info;
 			sceNetCtlInetGetInfo(SCE_NETCTL_INFO_GET_IP_ADDRESS, &info);
@@ -250,7 +250,7 @@ int sceDisplaySetFrameBuf_patched(const SceDisplayFrameBuf *pParam, int sync) {
 		if (isEncoderUnavailable) drawStringF(5,5, "ERROR: encoderInit -> 0x%X", isEncoderUnavailable);
 		else if ((!isNetAvailable) && (!skip_net_init)) drawString(5,5, "ERROR: malloc(NET_SIZE) -> NULL");
 	}else if ((!isEncoderUnavailable) && (isNetAvailable || skip_net_init)){
-		char txt[32], unused[256];
+		char txt[32], unused[16];
 		int sndbuf_size;
 		int mem_size;
 		unsigned int fromLen = sizeof(addrFrom);
@@ -258,7 +258,8 @@ int sceDisplaySetFrameBuf_patched(const SceDisplayFrameBuf *pParam, int sync) {
 			case CONFIG_MENU:
 				drawStringF(5,5, "IP: %s", vita_ip);
 				drawStringF(5,25, "Title ID: %s", titleid);
-				drawString(5, 50, "Standalone ScreenStream v.0.1 Beta - CONFIG MENU");
+				drawString(5, 50, "VITA2PC v.0.1 Experimental - CONFIG MENU");
+				drawStringF(5, 250, "Resolution: %d x %d", pParam->width, pParam->height);
 				drawConfigMenu();
 				break;
 			case LISTENING:
@@ -287,7 +288,7 @@ int sceDisplaySetFrameBuf_patched(const SceDisplayFrameBuf *pParam, int sync) {
 			case SYNC_BROADCAST:
 				if (loopDrawing == (3 + frameskip)){				
 					if (rescale_buffer != NULL){ // Downscaler available
-						rescaleBuffer((uint32_t*)pParam->base, rescale_buffer, pParam->width, pParam->height, pParam->pitch);
+						rescaleBuffer((uint32_t*)pParam->base, rescale_buffer, pParam->pitch);
 						mem = encodeARGB(&jpeg_encoder, rescale_buffer, 512, &mem_size);
 					}else mem = encodeARGB(&jpeg_encoder, pParam->base, pParam->pitch, &mem_size);
 					sceNetSendto(stream_skt, mem, mem_size, 0, (SceNetSockaddr*)&addrFrom, sizeof(addrFrom));
@@ -325,11 +326,16 @@ int module_start(SceSize argc, const void *args) {
 	}else if (strncmp(titleid, "PCSB00074", 9) == 0){ // Assassin's Creed III: Liberation (AUS)
 		mempool_size = 0x200000;
 		skip_net_init = 1;
+		delayed_net_init = 1;
 		// TODO: Game disables net feature for single player, that must be prevented
 	}else if (strncmp(titleid, "PCSF00178", 9) == 0){ // Soul Sacrifice (AUS)
 		mempool_size = 0x200000;
+	}else if (strncmp(titleid, "PCSF00024", 9) == 0){ // Gravity Rush (AUS)
+		mempool_size = 0x200000;
+	}else if (strncmp(titleid, "PCSB00170", 0) == 0){ // FIFA 13 (EUR)
+		mempool_size = 0x200000;
 	}
-		
+	
 	// Mutex for asynchronous streaming triggering
 	async_mutex = sceKernelCreateSema("async_mutex", 0, 0, 1, NULL);
 	
