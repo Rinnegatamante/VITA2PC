@@ -8,7 +8,7 @@ if(NOT DEFINED CMAKE_TOOLCHAIN_FILE)
   endif()
 endif()
 
-project(SA_ScreenStream)
+project(VITA2PC)
 include("${VITASDK}/share/vita.cmake" REQUIRED)
 
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wl,-q -Wall -O3 -std=gnu99 -DTAIPOOL_AS_STDLIB")
@@ -25,13 +25,13 @@ if (NOT ${RELEASE})
   add_definitions(-DENABLE_LOGGING)
 endif()
 
-add_executable(SA_ScreenStream
+add_executable(VITA2PC
   main.c
   renderer.c
   encoder.c
 )
 
-target_link_libraries(SA_ScreenStream
+target_link_libraries(VITA2PC
   taipool
   taihen_stub
   SceLibKernel_stub
@@ -52,10 +52,10 @@ target_link_libraries(SA_ScreenStream
   SceCtrl_stub
 )
 
-set_target_properties(SA_ScreenStream
+set_target_properties(VITA2PC
   PROPERTIES LINK_FLAGS "-nostdlib"
 )
 
-vita_create_self(SA_ScreenStream.suprx SA_ScreenStream
-  CONFIG ${CMAKE_SOURCE_DIR}/SA_ScreenStream.yml
+vita_create_self(VITA2PC.suprx VITA2PC
+  CONFIG ${CMAKE_SOURCE_DIR}/VITA2PC.yml
 )
