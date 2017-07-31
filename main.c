@@ -6,7 +6,7 @@
 #include "renderer.h"
 #include "encoder.h"
 
-#define HOOKS_NUM       5
+#define HOOKS_NUM       7
 #define MENU_ENTRIES    7
 #define QUALITY_ENTRIES 5
 
@@ -309,6 +309,15 @@ int sceDisplaySetFrameBuf_patched(const SceDisplayFrameBuf *pParam, int sync) {
 	return TAI_CONTINUE(int, ref[4], pParam, sync);
 }
 
+int scePowerSetUsingWireless_patched(int enable) {
+	return TAI_CONTINUE(int, ref[5], 1);
+}
+
+int scePowerSetConfigurationMode_patched(int mode) {
+	return 0;
+}
+
+
 void _start() __attribute__ ((weak, alias ("module_start")));
 int module_start(SceSize argc, const void *args) {
 	
@@ -327,7 +336,6 @@ int module_start(SceSize argc, const void *args) {
 		mempool_size = 0x200000;
 		skip_net_init = 1;
 		delayed_net_init = 1;
-		// TODO: Game disables net feature for single player, that must be prevented
 	}else if (strncmp(titleid, "PCSF00178", 9) == 0){ // Soul Sacrifice (AUS)
 		mempool_size = 0x200000;
 	}else if (strncmp(titleid, "PCSF00024", 9) == 0){ // Gravity Rush (AUS)
@@ -352,6 +360,8 @@ int module_start(SceSize argc, const void *args) {
 	hookFunction(0xA7739DBE, scePowerSetGpuXbarClockFrequency_patched);
 	hookFunction(0x74DB5AE5, scePowerSetArmClockFrequency_patched);
 	hookFunction(0x7A410B64, sceDisplaySetFrameBuf_patched);
+	hookFunction(0x4D695C1F, scePowerSetUsingWireless_patched);
+	hookFunction(0x3CE187B6, scePowerSetConfigurationMode_patched);
 	
 	return SCE_KERNEL_START_SUCCESS;
 }
