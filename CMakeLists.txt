@@ -34,22 +34,20 @@ add_executable(VITA2PC
 target_link_libraries(VITA2PC
   taipool
   taihen_stub
-  SceLibKernel_stub
-  SceIofilemgr_stub
-  SceDisplay_stub
-  SceGxm_stub
-  SceSysmem_stub
+  SceLibKernel_stub_weak
+  SceDisplay_stub_weak
+  SceSysmem_stub_weak
   jpeg
   k
   gcc
   SceNet_stub_weak
   SceNetCtl_stub_weak
   SceKernelThreadMgr_stub
-  SceSysmodule_stub
-  ScePower_stub
-  SceJpegEnc_stub
-  SceAppMgr_stub
-  SceCtrl_stub
+  SceSysmodule_stub_weak
+  ScePower_stub_weak
+  SceJpegEnc_stub_weak
+  SceAppMgr_stub_weak
+  SceCtrl_stub_weak
 )
 
 set_target_properties(VITA2PC
