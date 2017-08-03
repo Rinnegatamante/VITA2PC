@@ -332,16 +332,20 @@ int module_start(SceSize argc, const void *args) {
 	if (strncmp(titleid, "PCSE00491", 9) == 0){ // Minecraft (USA)
 		mempool_size = 0x200000;
 		skip_net_init = 1;
-	}else if (strncmp(titleid, "PCSB00074", 9) == 0){ // Assassin's Creed III: Liberation (AUS)
+	}else if (strncmp(titleid, "PCSB00074", 9) == 0){ // Assassin's Creed III: Liberation (EUR)
 		mempool_size = 0x200000;
 		skip_net_init = 1;
 		delayed_net_init = 1;
-	}else if (strncmp(titleid, "PCSF00178", 9) == 0){ // Soul Sacrifice (AUS)
+	}else if (strncmp(titleid, "PCSF00178", 9) == 0){ // Soul Sacrifice (EUR)
 		mempool_size = 0x200000;
-	}else if (strncmp(titleid, "PCSF00024", 9) == 0){ // Gravity Rush (AUS)
+	}else if (strncmp(titleid, "PCSF00024", 9) == 0){ // Gravity Rush (EUR)
 		mempool_size = 0x200000;
-	}else if (strncmp(titleid, "PCSB00170", 0) == 0){ // FIFA 13 (EUR)
+	}else if (strncmp(titleid, "PCSB00170", 9) == 0){ // FIFA 13 (EUR)
 		mempool_size = 0x200000;
+	}else if (strncmp(titleid, "PCSF00217", 9) == 0){ // Smart As... (EUR)
+		mempool_size = 0x200000;
+		skip_net_init = 1;
+		delayed_net_init = 1;
 	}
 	
 	// Mutex for asynchronous streaming triggering
