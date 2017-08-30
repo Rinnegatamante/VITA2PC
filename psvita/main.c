@@ -7,7 +7,7 @@
 #include "encoder.h"
 
 #define HOOKS_NUM       9
-#define MENU_ENTRIES    7
+#define MENU_ENTRIES    8
 #define QUALITY_ENTRIES 5
 
 #define STREAM_PORT    5000    // Port used for screen streaming
@@ -44,13 +44,14 @@ static char* qualities[] = {"Best", "High", "Default", "Low", "Worst"};
 static uint8_t qual_val[] = {0, 64, 128, 192, 255};
 static uint8_t frameskip = 0;
 static uint8_t stream_type = 1;
-static char* menu[] = {"Video Quality: ", "Video Codec: MJPEG", "Hardware Acceleration: ", "Downscaler: ","Frame Skip: ", "Stream Type: ", "Start Screen Streaming"};
+static char* menu[] = {"Video Quality: ", "Video Codec: MJPEG", "Hardware Acceleration: ", "Downscaler: ","Frame Skip: ", "Stream Type: ", "Audio Streaming: ", "Start Screen Streaming"};
 static uint32_t* rescale_buffer = NULL;
 static uint8_t enforce_sw = 0;
 static uint8_t skip_net_init = 0;
 static uint8_t delayed_net_init = 0;
 static uint32_t mempool_size = 0x500000;
 static char titleid[16];
+static int audioEnabled = 1;
 static int audioSamplerate = 0;
 static int audioLen = 0;
 static int audioStarted = 0;
@@ -78,6 +79,9 @@ void drawConfigMenu(){
 				break;
 			case 5:
 				drawStringF(5, 80 + i*20, "%s%s", menu[i], stream_type ? "Asynchronous" : "Synchronous");
+				break;
+			case 6:
+				drawStringF(5, 80 + i*20, "%s%s", menu[i], audioEnabled ? "Enabled" : "Disabled");
 				break;
 			default:
 				drawString(5, 80 + i*20, menu[i]);
@@ -173,6 +177,9 @@ void checkInput(SceCtrlData *ctrl){
 					stream_type = (stream_type + 1) % 2;
 					break;
 				case 6:
+					audioEnabled = (audioEnabled + 1) % 2;
+					break;
+				case 7:
 					encoderSetQuality(&jpeg_encoder, qual_val[qual_i]);
 					status = LISTENING;
 					break;
@@ -303,9 +310,11 @@ int sceDisplaySetFrameBuf_patched(const SceDisplayFrameBuf *pParam, int sync) {
 	}
 	
 	#ifndef NO_DEBUG
-	setTextColor(0x00FFFFFF);
-	drawStringF(5, 100, "taipool free space: %lu KBs", (taipool_get_free_space()>>10));
-	drawStringF(5, 120, "Debug: 0x%X", debug);
+	if (status != CONFIG_MENU){
+		setTextColor(0x00FFFFFF);
+		drawStringF(5, 100, "taipool free space: %lu KBs", (taipool_get_free_space()>>10));
+		drawStringF(5, 120, "Debug: 0x%X", debug);
+	}
 	#endif
 	
 	return TAI_CONTINUE(int, ref[4], pParam, sync);
@@ -334,7 +343,7 @@ int sceAudioOutOpenPort_patched(int type, int len, int freq, int mode) {
 
 int sceAudioOutOutput_patched(int port, const void* buf) {
 	char unused[16];
-	if (status >= SYNC_BROADCAST){
+	if (status >= SYNC_BROADCAST && audioEnabled){
 		if (audio_skt < 0){
 			int sndbuf_size = STREAM_BUFSIZE;
 			audio_skt = sceNetSocket("Audio Socket", SCE_NET_AF_INET, SCE_NET_SOCK_DGRAM, SCE_NET_IPPROTO_UDP);
