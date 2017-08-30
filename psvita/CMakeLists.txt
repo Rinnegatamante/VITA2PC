@@ -29,6 +29,7 @@ add_executable(VITA2PC
   main.c
   renderer.c
   encoder.c
+  rescaler.c
 )
 
 target_link_libraries(VITA2PC

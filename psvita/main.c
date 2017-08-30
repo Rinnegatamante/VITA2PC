@@ -5,12 +5,13 @@
 #include <libk/stdio.h>
 #include "renderer.h"
 #include "encoder.h"
+#include "rescaler.h"
 
 #define HOOKS_NUM       9
 #define MENU_ENTRIES    8
 #define QUALITY_ENTRIES 5
 
-#define STREAM_PORT    5000    // Port used for screen streaming
+#define VIDEO_PORT     5000    // Port used for screen streaming
 #define AUDIO_PORT     4000    // Port used for audio streaming
 #define STREAM_BUFSIZE 0x80000 // Size of stream buffer
 #define NET_SIZE       0x90000 // Size of net module buffer
@@ -21,40 +22,56 @@
 #define SYNC_BROADCAST  3
 #define ASYNC_BROADCAST 4
 
+// Net related variables
 static SceNetSockaddrIn addrTo, addrFrom, addrTo2, addrFrom2;
+static char vita_ip[32];
+static uint64_t vita_addr;
+static int stream_skt = -1;
+static int audio_skt = -1;
+
+// Hooks related variables
 static SceUID g_hooks[HOOKS_NUM], stream_thread_id, async_mutex;
 static tai_hook_ref_t ref[HOOKS_NUM];
 static uint8_t cur_hook = 0;
+
+// Status related variables
 static SceUID isEncoderUnavailable = 0;
 static SceUID isNetAvailable = 1;
 static SceUID firstBoot = 1;
-static uint8_t video_quality = 255;
-static encoder jpeg_encoder;
-static char vita_ip[32];
-static uint64_t vita_addr;
+static uint8_t audioStarted = 0;
+static uint8_t audioEnabled = 1;
 static uint8_t status = NOT_TRIGGERED;
-static int stream_skt = -1;
-static int audio_skt = -1;
-static int loopDrawing = 0;
-static uint32_t old_buttons;
 static int cfg_i = 0;
 static int qual_i = 2;
-static uint8_t* mem;
-static char* qualities[] = {"Best", "High", "Default", "Low", "Worst"};
-static uint8_t qual_val[] = {0, 64, 128, 192, 255};
-static uint8_t frameskip = 0;
-static uint8_t stream_type = 1;
-static char* menu[] = {"Video Quality: ", "Video Codec: MJPEG", "Hardware Acceleration: ", "Downscaler: ","Frame Skip: ", "Stream Type: ", "Audio Streaming: ", "Start Screen Streaming"};
-static uint32_t* rescale_buffer = NULL;
-static uint8_t enforce_sw = 0;
 static uint8_t skip_net_init = 0;
 static uint8_t delayed_net_init = 0;
+
+// Video streaming related variables
+static uint8_t video_quality = 255;
+static encoder jpeg_encoder;
+static uint8_t frameskip = 0;
+static uint8_t stream_type = 1;
+static uint8_t* mem;
+static uint32_t* rescale_buffer = NULL;
+static uint8_t enforce_sw = 0;
+
+// Drawing related variables
+static int loopDrawing = 0;
+static uint32_t old_buttons;
+
+// Menu related variables
+static char* qualities[] = {"Best", "High", "Default", "Low", "Worst"};
+static uint8_t qual_val[] = {0, 64, 128, 192, 255};
+static char* menu[] = {"Video Quality: ", "Video Codec: MJPEG", "Hardware Acceleration: ", "Downscaler: ","Frame Skip: ", "Stream Type: ", "Audio Streaming: ", "Start Screen Streaming"};
+
+// Generic variables
 static uint32_t mempool_size = 0x500000;
 static char titleid[16];
-static int audioEnabled = 1;
+
+// Audio streaming related variables
 static int audioSamplerate = 0;
 static int audioLen = 0;
-static int audioStarted = 0;
+
 #ifndef NO_DEBUG
 static int debug = 0;
 #endif
@@ -97,21 +114,7 @@ void hookFunction(uint32_t nid, const void* func){
 	cur_hook++;
 }
 
-// CPU downscaling function
-void rescaleBuffer(uint32_t* src, uint32_t* dst, uint32_t pitch){
-	int i,j,z,k,ptr;
-	z=0;
-	k=0;
-	for (i=0;i < 544; i+=2){
-		ptr = pitch * i;
-		z = 512 * (k++);
-		for (j=0;j < 960; j+=2){
-			dst[z++]=src[ptr+j];
-		}
-	}
-}
-
-// Asynchronous streaming thread
+// Asynchronous video streaming thread
 int stream_thread(SceSize args, void *argp){
 	int mem_size;
 	SceDisplayFrameBuf param;
@@ -120,7 +123,7 @@ int stream_thread(SceSize args, void *argp){
 	for (;;){
 		sceDisplayGetFrameBuf(&param, SCE_DISPLAY_SETBUF_NEXTFRAME);
 		if (rescale_buffer != NULL){ // Downscaler available
-			rescaleBuffer((uint32_t*)param.base, rescale_buffer, param.pitch);
+			rescaleBuffer((uint32_t*)param.base, rescale_buffer, param.pitch, param.width, param.height);
 			mem = encodeARGB(&jpeg_encoder, rescale_buffer, 512, &mem_size);
 		}else mem = encodeARGB(&jpeg_encoder, param.base, param.pitch, &mem_size);
 		sceNetSendto(stream_skt, mem, mem_size, 0, (SceNetSockaddr*)&addrFrom, sizeof(addrFrom));
@@ -216,7 +219,6 @@ void checkInput(SceCtrlData *ctrl){
 		}
 	}
 	old_buttons = ctrl->buttons;
-	if (status != NOT_TRIGGERED && status < SYNC_BROADCAST) ctrl->buttons = 0x0; // Nullifing input
 }
 
 // This can be considered as our main loop
@@ -281,7 +283,7 @@ int sceDisplaySetFrameBuf_patched(const SceDisplayFrameBuf *pParam, int sync) {
 					sndbuf_size = STREAM_BUFSIZE;
 					stream_skt = sceNetSocket("Stream Socket", SCE_NET_AF_INET, SCE_NET_SOCK_DGRAM, SCE_NET_IPPROTO_UDP);
 					addrTo.sin_family = SCE_NET_AF_INET;
-					addrTo.sin_port = sceNetHtons(STREAM_PORT);
+					addrTo.sin_port = sceNetHtons(VIDEO_PORT);
 					addrTo.sin_addr.s_addr = vita_addr;
 					sceNetBind(stream_skt, (SceNetSockaddr*)&addrTo, sizeof(addrTo));
 					sceNetSetsockopt(stream_skt, SCE_NET_SOL_SOCKET, SCE_NET_SO_SNDBUF, &sndbuf_size, sizeof(sndbuf_size));
@@ -298,7 +300,7 @@ int sceDisplaySetFrameBuf_patched(const SceDisplayFrameBuf *pParam, int sync) {
 			case SYNC_BROADCAST:
 				if (loopDrawing == (3 + frameskip)){				
 					if (rescale_buffer != NULL){ // Downscaler available
-						rescaleBuffer((uint32_t*)pParam->base, rescale_buffer, pParam->pitch);
+						rescaleBuffer((uint32_t*)pParam->base, rescale_buffer, pParam->pitch, pParam->width, pParam->height);
 						mem = encodeARGB(&jpeg_encoder, rescale_buffer, 512, &mem_size);
 					}else mem = encodeARGB(&jpeg_encoder, pParam->base, pParam->pitch, &mem_size);
 					sceNetSendto(stream_skt, mem, mem_size, 0, (SceNetSockaddr*)&addrFrom, sizeof(addrFrom));
@@ -426,6 +428,7 @@ int module_stop(SceSize argc, const void *args) {
 		if (!isEncoderUnavailable) encoderTerm(&jpeg_encoder);
 		if (isNetAvailable){
 			sceNetSocketClose(stream_skt);
+			if (audio_skt >= 0) sceNetSocketClose(audio_skt);
 			free((void*)isNetAvailable); 
 		}
 	}
