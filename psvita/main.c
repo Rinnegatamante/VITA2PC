@@ -163,6 +163,7 @@ void checkInput(SceCtrlData *ctrl){
 			switch (cfg_i){
 				case 0:
 					qual_i = (qual_i + 1) % QUALITY_ENTRIES;
+					encoderSetQuality(&jpeg_encoder, qual_val[qual_i]);
 					break;
 				case 3:
 					param.size = sizeof(SceDisplayFrameBuf);
