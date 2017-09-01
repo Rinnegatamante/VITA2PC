@@ -7,7 +7,7 @@ void rescaleBuffer(uint32_t* src, uint32_t* dst, uint32_t pitch, uint32_t width,
 	k=0;
 	for (i=0;i < height; i+=2){
 		ptr = pitch * i;
-		z = height * (k++);
+		z = 512 * (k++);
 		for (j=0;j < width; j+=2){
 			dst[z++]=src[ptr+j];
 		}

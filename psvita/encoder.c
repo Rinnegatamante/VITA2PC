@@ -82,7 +82,6 @@ void encoderSetRescaler(encoder* enc, uint8_t use){
 		if (enc->isHwAccelerated){
 			enc->rescale_buffer = enc->tempbuf_addr + enc->in_size;
 			sceJpegEncoderEnd(enc->context);
-			if (enc->gpublock != 0)
 			sceJpegEncoderInit(enc->context, 480, 272, SCE_JPEGENC_PIXELFORMAT_YCBCR420 | SCE_JPEGENC_PIXELFORMAT_CSC_ARGB_YCBCR, enc->tempbuf_addr + enc->in_size, enc->out_size);
 			sceJpegEncoderSetValidRegion(enc->context, 480, 272);
 		}else{		
