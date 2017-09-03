@@ -7,14 +7,15 @@
 #include "encoder.h"
 #include "rescaler.h"
 
-#define HOOKS_NUM       9
+#define HOOKS_NUM       10
 #define MENU_ENTRIES    8
 #define QUALITY_ENTRIES 5
 
 #define VIDEO_PORT     5000    // Port used for screen streaming
-#define AUDIO_PORT     4000    // Port used for audio streaming
+#define AUDIO_PORT     4000    // Starting port used for audio streaming
 #define STREAM_BUFSIZE 0x80000 // Size of stream buffer
 #define NET_SIZE       0x90000 // Size of net module buffer
+#define AUDIO_CHANNELS 8       // PSVITA has 8 available audio channels
 
 #define NOT_TRIGGERED   0
 #define CONFIG_MENU     1
@@ -22,12 +23,20 @@
 #define SYNC_BROADCAST  3
 #define ASYNC_BROADCAST 4
 
+// Audioports struct
+typedef struct audioPort{
+	int len;
+	int samplerate;
+	int mode;
+} audioPort;
+
 // Net related variables
-static SceNetSockaddrIn addrTo, addrFrom, addrTo2, addrFrom2;
+static SceNetSockaddrIn addrTo, addrFrom;
+static SceNetSockaddrIn audioTo[AUDIO_CHANNELS], audioFrom[AUDIO_CHANNELS];
 static char vita_ip[32];
 static uint64_t vita_addr;
 static int stream_skt = -1;
-static int audio_skt = -1;
+static int audio_skt[AUDIO_CHANNELS];
 
 // Hooks related variables
 static SceUID g_hooks[HOOKS_NUM], stream_thread_id, async_mutex;
@@ -38,7 +47,6 @@ static uint8_t cur_hook = 0;
 static SceUID isEncoderUnavailable = 0;
 static SceUID isNetAvailable = 1;
 static SceUID firstBoot = 1;
-static uint8_t audioStarted = 0;
 static uint8_t audioEnabled = 1;
 static uint8_t status = NOT_TRIGGERED;
 static int cfg_i = 0;
@@ -69,12 +77,27 @@ static uint32_t mempool_size = 0x500000;
 static char titleid[16];
 
 // Audio streaming related variables
-static int audioSamplerate = 0;
-static int audioLen = 0;
+static audioPort ports[AUDIO_CHANNELS];
 
 #ifndef NO_DEBUG
 static int debug = 0;
 #endif
+
+// Init an audio streaming socket
+void initAudioSocket(int ch){
+	int sndbuf_size = STREAM_BUFSIZE;
+	char unused[16];
+	unsigned int fromLen = sizeof(audioFrom[ch]);
+	audio_skt[ch] = sceNetSocket("Audio Socket", SCE_NET_AF_INET, SCE_NET_SOCK_DGRAM, SCE_NET_IPPROTO_UDP);
+	audioTo[ch].sin_family = SCE_NET_AF_INET;
+	audioTo[ch].sin_port = sceNetHtons(AUDIO_PORT + ch);
+	audioTo[ch].sin_addr.s_addr = vita_addr;
+	sceNetBind(audio_skt[ch], (SceNetSockaddr*)&audioTo[ch], sizeof(audioTo[ch]));
+	sceNetSetsockopt(audio_skt[ch], SCE_NET_SOL_SOCKET, SCE_NET_SO_SNDBUF, &sndbuf_size, sizeof(sndbuf_size));
+	sceNetRecvfrom(audio_skt[ch], unused, 8, 0, (SceNetSockaddr*)&audioFrom[ch], &fromLen);
+	sceNetSendto(audio_skt[ch], &ports[ch], sizeof(audioPort), 0, (SceNetSockaddr*)&audioFrom[ch], sizeof(audioFrom[ch]));
+	sceNetRecvfrom(audio_skt[ch], unused, 8, 0, (SceNetSockaddr*)&audioFrom[ch], &fromLen);
+}
 
 // Config Menu Renderer
 void drawConfigMenu(){
@@ -267,7 +290,7 @@ int sceDisplaySetFrameBuf_patched(const SceDisplayFrameBuf *pParam, int sync) {
 		else if ((!isNetAvailable) && (!skip_net_init)) drawString(5,5, "ERROR: malloc(NET_SIZE) -> NULL");
 	}else if ((!isEncoderUnavailable) && (isNetAvailable || skip_net_init)){
 		char txt[32], unused[16];
-		int sndbuf_size;
+		int sndbuf_size = STREAM_BUFSIZE;
 		int mem_size;
 		unsigned int fromLen = sizeof(addrFrom);
 		switch (status){
@@ -280,7 +303,6 @@ int sceDisplaySetFrameBuf_patched(const SceDisplayFrameBuf *pParam, int sync) {
 				break;
 			case LISTENING:
 				if (stream_skt < 0){
-					sndbuf_size = STREAM_BUFSIZE;
 					stream_skt = sceNetSocket("Stream Socket", SCE_NET_AF_INET, SCE_NET_SOCK_DGRAM, SCE_NET_IPPROTO_UDP);
 					addrTo.sin_family = SCE_NET_AF_INET;
 					addrTo.sin_port = sceNetHtons(VIDEO_PORT);
@@ -289,7 +311,7 @@ int sceDisplaySetFrameBuf_patched(const SceDisplayFrameBuf *pParam, int sync) {
 					sceNetSetsockopt(stream_skt, SCE_NET_SOL_SOCKET, SCE_NET_SO_SNDBUF, &sndbuf_size, sizeof(sndbuf_size));
 				}
 				sceNetRecvfrom(stream_skt, unused, 8, 0, (SceNetSockaddr*)&addrFrom, &fromLen);
-				sprintf(txt, "%d;%d;%hhu;%d", (jpeg_encoder.rescale_buffer != NULL) ? 480 : pParam->width, (jpeg_encoder.rescale_buffer != NULL) ? 272 : pParam->height, jpeg_encoder.isHwAccelerated, audioSamplerate);
+				sprintf(txt, "%d;%d;%hhu", (jpeg_encoder.rescale_buffer != NULL) ? 480 : pParam->width, (jpeg_encoder.rescale_buffer != NULL) ? 272 : pParam->height, jpeg_encoder.isHwAccelerated);
 				sceNetSendto(stream_skt, txt, 32, 0, (SceNetSockaddr*)&addrFrom, sizeof(addrFrom));
 				status = SYNC_BROADCAST + stream_type;
 				
@@ -331,40 +353,39 @@ int scePowerSetConfigurationMode_patched(int mode) {
 	return 0;
 }
 
-/*
- NOTE: Audio is handled assuming only one channel is playing with a mixer for sounds,
- however, this is only correct in few cases (eg. SAO: Lost Song). There are games using
- multiple audio channels, a proper way to handle this is to send audioport number too
- and handle on client different audioports with different SDL Mixer audio channels.
-*/
 int sceAudioOutOpenPort_patched(int type, int len, int freq, int mode) {
 	int ret = TAI_CONTINUE(int, ref[7], type, len, freq, mode);
-	audioSamplerate = freq;
-	audioLen = len<<2;
+	int ch = (ret == 0x100) ? 0 : ret;
+	if (ports[ch].len == 0){
+		ports[ch].len = (len << 1) * (mode + 1);
+		ports[ch].samplerate = freq;
+		ports[ch].mode = mode;
+		if (status >= SYNC_BROADCAST && audioEnabled) initAudioSocket(ch);
+	}
 	return ret;
 }
 
 int sceAudioOutOutput_patched(int port, const void* buf) {
-	char unused[16];
+	int ch = (port == 0x100) ? 0 : port;
 	if (status >= SYNC_BROADCAST && audioEnabled){
-		if (audio_skt < 0){
-			int sndbuf_size = STREAM_BUFSIZE;
-			audio_skt = sceNetSocket("Audio Socket", SCE_NET_AF_INET, SCE_NET_SOCK_DGRAM, SCE_NET_IPPROTO_UDP);
-			addrTo2.sin_family = SCE_NET_AF_INET;
-			addrTo2.sin_port = sceNetHtons(AUDIO_PORT);
-			addrTo2.sin_addr.s_addr = vita_addr;
-			sceNetBind(audio_skt, (SceNetSockaddr*)&addrTo2, sizeof(addrTo2));
-			sceNetSetsockopt(audio_skt, SCE_NET_SOL_SOCKET, SCE_NET_SO_SNDBUF, &sndbuf_size, sizeof(sndbuf_size));
-		}
-		unsigned int fromLen = sizeof(addrFrom2);
-		if (!audioStarted){
-			sceNetRecvfrom(audio_skt, unused, 8, 0, (SceNetSockaddr*)&addrFrom2, &fromLen);
-			audioStarted = 1;
-		}
-		sceNetSendto(audio_skt, buf, audioLen, 0, (SceNetSockaddr*)&addrFrom2, sizeof(addrFrom2));
+		if (audio_skt[ch] < 0) initAudioSocket(ch);
+		sceNetSendto(audio_skt[ch], buf, ports[ch].len, 0, (SceNetSockaddr*)&audioFrom[ch], sizeof(audioFrom[ch]));
 	}
-	int ret = TAI_CONTINUE(int, ref[8], port, buf);
-	return ret;
+	return TAI_CONTINUE(int, ref[8], port, buf);
+}
+
+int sceAudioOutReleasePort_patched(int port) {
+	int ch = (port == 0x100) ? 0 : port;
+	if (status >= SYNC_BROADCAST && audioEnabled){
+		if (audio_skt[ch] >= 0){
+			char closeup[16];
+			sprintf(closeup, "end");
+			sceNetSendto(audio_skt[ch], closeup, 16, 0, (SceNetSockaddr*)&audioFrom[ch], sizeof(audioFrom[ch]));
+			sceNetSocketClose(audio_skt[ch]);
+			audio_skt[ch] = -1;
+		}
+	}
+	return TAI_CONTINUE(int, ref[9], port);
 }
 
 void _start() __attribute__ ((weak, alias ("module_start")));
@@ -397,6 +418,13 @@ int module_start(SceSize argc, const void *args) {
 		delayed_net_init = 1;
 	}
 	
+	// Initializing audio sockets and structs
+	memset(&ports, 0, sizeof(audioPort) * AUDIO_CHANNELS);
+	int i;
+	for (i = 0; i < AUDIO_CHANNELS; i++){
+		audio_skt[i] = -1;
+	}
+	
 	// Mutex for asynchronous streaming triggering
 	async_mutex = sceKernelCreateSema("async_mutex", 0, 0, 1, NULL);
 	
@@ -417,6 +445,7 @@ int module_start(SceSize argc, const void *args) {
 	hookFunction(0x3CE187B6, scePowerSetConfigurationMode_patched);
 	hookFunction(0x5BC341E4, sceAudioOutOpenPort_patched);
 	hookFunction(0x02DB3F5F, sceAudioOutOutput_patched);
+	hookFunction(0x69E2E6B5, sceAudioOutReleasePort_patched);
 	
 	return SCE_KERNEL_START_SUCCESS;
 }
@@ -428,7 +457,10 @@ int module_stop(SceSize argc, const void *args) {
 		if (!isEncoderUnavailable) encoderTerm(&jpeg_encoder);
 		if (isNetAvailable){
 			sceNetSocketClose(stream_skt);
-			if (audio_skt >= 0) sceNetSocketClose(audio_skt);
+			int i;
+			for (i = 0; i < AUDIO_CHANNELS; i++){
+				if (audio_skt[i] >= 0) sceNetSocketClose(audio_skt[i]);
+			}
 			free((void*)isNetAvailable); 
 		}
 	}

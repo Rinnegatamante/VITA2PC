@@ -15,9 +15,19 @@
 # include <arpa/inet.h>
 #endif
 
-#define VIDEO_PORT 5000 // Port to use for video streaming
-#define AUDIO_PORT 4000 // Port to use for audio streaming
-#define RCV_BUFSIZE 0x800000 // Size of the buffer used to store received packets
+#define VIDEO_PORT     5000     // Port to use for video streaming
+#define AUDIO_PORT     4000     // Starting port to use for audio streaming
+#define RCV_BUFSIZE    0x800000 // Size of the buffer used to store received packets
+#define AUDIO_CHANNELS 8        // PSVITA has 8 available audio channels
+
+// Audioports struct
+typedef struct audioPort{
+	int len;
+	int samplerate;
+	int mode;
+	uint8_t buffer[RCV_BUFSIZE];
+	Mix_Chunk* chunk;
+} audioPort;
 
 typedef struct{
 	uint32_t sock;
@@ -28,11 +38,13 @@ int width, height, size, samplerate;
 SDL_Surface* frame = NULL;
 SDL_Surface* new_frame = NULL;
 char* buffer;
-uint8_t* audio_buffer;
 GLint nofcolors = 3;
 GLenum texture_format=GL_RGB;
 GLuint texture=0;
 char host[32];
+static audioPort ports[AUDIO_CHANNELS];
+static int thdId[AUDIO_CHANNELS] = {0,1,2,3,4,5,6,7};
+static int mix_started = 0;
 
 void updateFrame(){
 
@@ -71,59 +83,74 @@ void drawFrame(){
 	SDL_GL_SwapBuffers();
 }
 
-Socket* audio_socket;
-Mix_Chunk* mix_chunk;
+DWORD WINAPI audioThread(void* data);
+Socket* audio_socket[AUDIO_CHANNELS];
 
 void swapChunk_CB(int chn){
 	int rbytes;
 	do{
-		rbytes = recv(audio_socket->sock, audio_buffer, RCV_BUFSIZE, 0);
-	}while(rbytes < 0);
-	mix_chunk = Mix_QuickLoad_RAW(audio_buffer, rbytes);
-	int err = Mix_PlayChannel(chn, mix_chunk, 0);
-	if (err == -1) printf("ERROR: Failed outputting audio chunk.\n%s\n",Mix_GetError());
+		rbytes = recv(audio_socket[chn]->sock, ports[chn].buffer, RCV_BUFSIZE, 0);
+	}while(rbytes <= 0);
+	
+	// Audio port closed on Vita side
+	if (rbytes < 512){
+		printf("\nAudio channel %d closed", chn);
+		CreateThread(NULL, 0, audioThread, &thdId[chn], 0, NULL);
+		return;
+	}
+	
+	ports[chn].chunk = Mix_QuickLoad_RAW(ports[chn].buffer, rbytes);
+	int err = Mix_PlayChannel(chn, ports[chn].chunk, 0);
+	//if (err == -1) printf("\nERROR: Failed outputting audio chunk.\n%s",Mix_GetError());
 }
 
 DWORD WINAPI audioThread(void* data) {
 	
-	printf("\nAudio thread started");
+	int* ptr = (int*)data;
+	int id = ptr[0];
+	
+	printf("\nAudio thread for channel %d started", id);
 	
 	// Creating client socket
-	audio_socket = (Socket*) malloc(sizeof(Socket));
-	memset(&audio_socket->addrTo, '0', sizeof(audio_socket->addrTo));
-	audio_socket->addrTo.sin_family = AF_INET;
-	audio_socket->addrTo.sin_port = htons(AUDIO_PORT);
-	audio_socket->addrTo.sin_addr.s_addr = inet_addr(host);
-	int addrLen = sizeof(audio_socket->addrTo);
-	audio_socket->sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+	audio_socket[id] = (Socket*) malloc(sizeof(Socket));
+	memset(&audio_socket[id]->addrTo, '0', sizeof(audio_socket[id]->addrTo));
+	audio_socket[id]->addrTo.sin_family = AF_INET;
+	audio_socket[id]->addrTo.sin_port = htons(AUDIO_PORT + id);
+	audio_socket[id]->addrTo.sin_addr.s_addr = inet_addr(host);
+	int addrLen = sizeof(audio_socket[id]->addrTo);
+	audio_socket[id]->sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
 	
 	// Connecting to VITA2PC
-	int err = connect(audio_socket->sock, (struct sockaddr*)&audio_socket->addrTo, sizeof(audio_socket->addrTo));
-	send(audio_socket->sock, "request", 8, 0);
-	printf("\nAudio thread operative");
+	int err = connect(audio_socket[id]->sock, (struct sockaddr*)&audio_socket[id]->addrTo, sizeof(audio_socket[id]->addrTo));
 	
-	audio_buffer = (uint8_t*)malloc(RCV_BUFSIZE);
-	
-	int ch = 0xDEADBEEF;;
 	int rbytes;
 	do{
-		rbytes = recv(audio_socket->sock, audio_buffer, RCV_BUFSIZE, 0);
-	}while (rbytes < 0);
+		send(audio_socket[id]->sock, "request", 8, 0);
+		rbytes = recv(audio_socket[id]->sock, (char*)&ports[id], RCV_BUFSIZE, 0);
+	}while (rbytes <= 0);
 	
-	Mix_OpenAudio(samplerate,AUDIO_S16LSB,2,rbytes<<2);
+	send(audio_socket[id]->sock, "request", 8, 0);
+	audioPort* port = (audioPort*)&ports[id];
+	printf("\nAudio thread for port %d operative (Samplerate: %d Hz, Mode: %s)", id, port->samplerate, port->mode == 0 ? "Mono" : "Stereo");
+		
+	printf("\nStarted Mixer with Samplerate: %d Hz, Mode: %s, Chunk Length: %d", port->samplerate, port->mode == 0 ? "Mono" : "Stereo", port->len);
+	err = Mix_OpenAudio(port->samplerate, AUDIO_S16LSB, port->mode + 1, port->len);
+	if (err < 0) printf("\nERROR: Failed starting mixer.\n%s",Mix_GetError());
 	Mix_ChannelFinished(swapChunk_CB);
 	
-	for (;;){
-		
-		if (ch == 0xDEADBEEF){
-			mix_chunk = Mix_QuickLoad_RAW(audio_buffer, rbytes);
-			if (mix_chunk == NULL) printf("ERROR: Failed opening audio chunk.\n%s\n",Mix_GetError());
-			else printf("\nStarting audio playback. (Chunks size: %d bytes)", rbytes);
-			ch = Mix_PlayChannel(-1, mix_chunk, 0);
-			if (ch == -1) printf("ERROR: Failed outputting audio chunk.\n%s\n",Mix_GetError());
-		}
-		
-	}
+	int rcvbuf = RCV_BUFSIZE;
+	setsockopt(audio_socket[id]->sock, SOL_SOCKET, SO_RCVBUF, (char*)&rcvbuf, sizeof(rcvbuf));
+	u_long _true = 1;
+	ioctlsocket(audio_socket[id]->sock, FIONBIO, &_true);
+	do{
+		rbytes = recv(audio_socket[id]->sock, port->buffer, RCV_BUFSIZE, 0);
+	}while (rbytes <= 0);
+	
+	port->chunk = Mix_QuickLoad_RAW(port->buffer, rbytes);
+	if (port->chunk == NULL) printf("\nERROR: Failed opening audio chunk.\n%s",Mix_GetError());
+	int ch = Mix_PlayChannel(id, port->chunk, 0);
+	if (ch == -1) printf("\nERROR: Failed outputting audio chunk.\n%s",Mix_GetError());
+	else printf("\nStarting audio playback on channel %d. (Chunks size: %d bytes)", ch, rbytes);
 	
 	return 0;
 }
@@ -169,16 +196,16 @@ int main(int argc, char* argv[]){
 		close(my_socket->sock);
 		return -1;
 	}else printf("\nConnection established!");
+	printf("\n\n%d\n\n", err);
 	fflush(stdout);
 	u_long _true = 1;
 	uint8_t accelerated;
 	char sizes[32];
 	send(my_socket->sock, "request", 8, 0);
 	recv(my_socket->sock, sizes, 32, 0);
-	sscanf(sizes, "%d;%d;%hhu;%d", &width, &height, &accelerated, &samplerate);
+	sscanf(sizes, "%d;%d;%hhu", &width, &height, &accelerated);
 	printf("\nThe game %s hardware acceleration.", accelerated ? "supports" : "does not support");
 	printf("\nSetting window resolution to %d x %d", width, height);
-	printf("\nAudio samplerate set to %d Hz", samplerate);
 	fflush(stdout);
 	ioctlsocket(my_socket->sock, FIONBIO, &_true);
 	int rcvbuf = RCV_BUFSIZE;
@@ -187,7 +214,10 @@ int main(int argc, char* argv[]){
 	printf("\nReceive buffer size set to %d bytes", rcvbuf);
 	
 	// Starting audio streaming thread
-	HANDLE thread = CreateThread(NULL, 0, audioThread, NULL, 0, NULL);
+	int i;
+	for (i = 0; i < AUDIO_CHANNELS; i++){
+		CreateThread(NULL, 0, audioThread, &thdId[i], 0, NULL);
+	}
 	
 	// Initializing SDL and openGL stuffs
 	uint8_t quit = 0;
