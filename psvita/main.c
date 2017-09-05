@@ -23,6 +23,8 @@
 #define SYNC_BROADCAST  3
 #define ASYNC_BROADCAST 4
 
+#define NO_DEBUG
+
 // Audioports struct
 typedef struct audioPort{
 	int len;
@@ -411,6 +413,8 @@ int module_start(SceSize argc, const void *args) {
 	}else if (strncmp(titleid, "PCSF00024", 9) == 0){ // Gravity Rush (EUR)
 		mempool_size = 0x200000;
 	}else if (strncmp(titleid, "PCSB00170", 9) == 0){ // FIFA 13 (EUR)
+		mempool_size = 0x200000;
+	}else if (strncmp(titleid, "PCSB00001", 9) == 0){ // Uncharted: Golden Abyss (EUR)
 		mempool_size = 0x200000;
 	}else if (strncmp(titleid, "PCSF00217", 9) == 0){ // Smart As... (EUR)
 		mempool_size = 0x200000;
