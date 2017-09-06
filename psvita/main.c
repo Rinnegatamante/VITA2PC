@@ -416,10 +416,16 @@ int module_start(SceSize argc, const void *args) {
 		mempool_size = 0x200000;
 	}else if (strncmp(titleid, "PCSB00001", 9) == 0){ // Uncharted: Golden Abyss (EUR)
 		mempool_size = 0x200000;
+	}else if (strncmp(titleid, "PCSB00404", 9) == 0){ // Muramasa Rebirth (EUR)
+		mempool_size = 0x200000;
 	}else if (strncmp(titleid, "PCSF00217", 9) == 0){ // Smart As... (EUR)
 		mempool_size = 0x200000;
 		skip_net_init = 1;
 		delayed_net_init = 1;
+	}else if (strncmp(titleid, "PCSF00485", 9) == 0){ // Ratchet and Clank 2 (EUR)
+		mempool_size = 0x200000;
+	}else if (strncmp(titleid, "PCSF00486", 9) == 0){ // Ratchet and Clank 3 (EUR)
+		mempool_size = 0x200000;
 	}
 	
 	// Initializing audio sockets and structs
