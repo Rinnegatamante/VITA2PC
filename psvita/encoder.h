@@ -6,6 +6,7 @@
 
 typedef struct encoder{
 	uint8_t isHwAccelerated;
+	uint8_t vram_usage;
 	SceUID gpublock;
 	void* tempbuf_addr;
 	void* rescale_buffer;
