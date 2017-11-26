@@ -33,7 +33,7 @@ const char* modes[DISPLAY_MODES] = {
 	"Original Resolution (No Filter)",
 	"Original Resolution (Bilinear Filter)",
 	"Vita Resolution (No Filter)",
-	"Vita Resolution (Bilinear Filter)",
+	"Vita Resolution (Bilinear Filter)"
 };
 
 // Audioports struct
@@ -137,10 +137,12 @@ DWORD WINAPI audioThread(void* data);
 Socket* audio_socket[AUDIO_CHANNELS];
 
 void swapChunk_CB(int chn){
-	int rbytes;
-	do{
-		rbytes = recv(audio_socket[chn]->sock, (char*)ports[chn].buffer, RCV_BUFSIZE, 0);
-	}while(rbytes <= 0);
+	
+	int rbytes = recv(audio_socket[chn]->sock, (char*)ports[chn].buffer, RCV_BUFSIZE, 0);
+	if (rbytes <= 0){
+		memset(ports[chn].buffer, 0, 8192);
+		rbytes = 8192;
+	}
 	
 	// Audio port closed on Vita side
 	if (rbytes < 512){
