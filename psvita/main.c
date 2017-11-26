@@ -299,7 +299,7 @@ int sceDisplaySetFrameBuf_patched(const SceDisplayFrameBuf *pParam, int sync) {
 			case CONFIG_MENU:
 				drawStringF(5,5, "IP: %s", vita_ip);
 				drawStringF(5,25, "Title ID: %s", titleid);
-				drawString(5, 50, "VITA2PC v.0.1 Experimental - CONFIG MENU");
+				drawString(5, 50, "VITA2PC v.0.2 Experimental - CONFIG MENU");
 				drawStringF(5, 250, "Resolution: %d x %d", pParam->width, pParam->height);
 				drawConfigMenu();
 				break;
