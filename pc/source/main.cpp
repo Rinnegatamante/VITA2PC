@@ -1,11 +1,18 @@
-#include "SDL/SDL.h"
-#include "SDL/SDL_image.h"
-#include "SDL/SDL_mixer.h"
-#include "SDL/SDL_opengl.h"
+extern "C"{
+	#include "SDL/SDL.h"
+	#include "SDL/SDL_image.h"
+	#include "SDL/SDL_mixer.h"
+	#include "SDL/SDL_syswm.h"
+	#include "SDL/SDL_opengl.h"
+	#include "icon.h"
+}
 #include <stdio.h>
 #include <unistd.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <string.h>
+#include <windows.h>
+#include <shellapi.h>
 #ifdef __WIN32__
 # include <winsock2.h>
 #else
@@ -19,6 +26,15 @@
 #define AUDIO_PORT     4000     // Starting port to use for audio streaming
 #define RCV_BUFSIZE    0x800000 // Size of the buffer used to store received packets
 #define AUDIO_CHANNELS 8        // PSVITA has 8 available audio channels
+#define DISPLAY_MODES  4        // Available rendering modes
+
+// Display modes names
+const char* modes[DISPLAY_MODES] = {
+	"Original Resolution (No Filter)",
+	"Original Resolution (Bilinear Filter)",
+	"Vita Resolution (No Filter)",
+	"Vita Resolution (Bilinear Filter)",
+};
 
 // Audioports struct
 typedef struct audioPort{
@@ -34,17 +50,20 @@ typedef struct{
 	struct sockaddr_in addrTo;
 } Socket;
 
-int width, height, size, samplerate;
+int width, height, size, samplerate, dwidth, dheight;
 SDL_Surface* frame = NULL;
+SDL_Surface* screen = NULL;
 SDL_Surface* new_frame = NULL;
-char* buffer;
+uint8_t* buffer;
 GLint nofcolors = 3;
 GLenum texture_format=GL_RGB;
-GLuint texture=0;
+GLuint texture=0, min_filter, mag_filter;
 char host[32];
 static audioPort ports[AUDIO_CHANNELS];
 static int thdId[AUDIO_CHANNELS] = {0,1,2,3,4,5,6,7};
 static int mix_started = 0;
+
+int mode = 0;
 
 void updateFrame(){
 
@@ -58,10 +77,7 @@ void updateFrame(){
 	if (frame == NULL) return;
 	
 	fflush(stdout);
-	glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR );
-	glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR );
 	glTexImage2D( GL_TEXTURE_2D, 0, nofcolors, frame->w, frame->h, 0, texture_format, GL_UNSIGNED_BYTE, frame->pixels );
-	
 }
 
 // Drawing function using openGL
@@ -69,18 +85,52 @@ void drawFrame(){
 	if (texture == 0) return;	
 	glClear( GL_COLOR_BUFFER_BIT );
 	glBindTexture( GL_TEXTURE_2D, texture );
+	glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, min_filter);
+	glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, mag_filter);
 	glBegin( GL_QUADS );
 	glTexCoord2i( 0, 0 );
 	glVertex3f( 0, 0, 0 );
 	glTexCoord2i( 1, 0 );
-	glVertex3f( width, 0, 0 );
+	glVertex3f( dwidth, 0, 0 );
 	glTexCoord2i( 1, 1 );
-	glVertex3f( width, height, 0 );
+	glVertex3f( dwidth, dheight, 0 );
 	glTexCoord2i( 0, 1 );
-	glVertex3f( 0, height, 0 );
+	glVertex3f( 0, dheight, 0 );
 	glEnd();
 	glLoadIdentity();
 	SDL_GL_SwapBuffers();
+}
+
+// Changes current display mode
+void changeDisplayMode(int mode){
+	switch (mode){
+		case 0:
+		case 2:
+			mag_filter = min_filter = GL_NEAREST;
+			break;
+		case 1:
+		case 3:
+			mag_filter = min_filter = GL_LINEAR;
+			break;
+	}
+	if (mode < 2){
+		dwidth = width;
+		dheight = height;
+	}else{
+		dwidth = 960;
+		dheight = 544;
+	}
+	if (mode == 0 || mode == 2){
+		screen = SDL_SetVideoMode(dwidth, dheight, 32, SDL_OPENGL);
+		glClearColor(0, 0, 0, 0);
+		glEnable(GL_TEXTURE_2D);
+		glViewport( 0, 0, dwidth, dheight);
+		glMatrixMode( GL_PROJECTION );
+		glLoadIdentity();
+		glOrtho(0, dwidth, dheight, 0, -1, 1);
+		glMatrixMode(GL_MODELVIEW);
+		glLoadIdentity();
+	}
 }
 
 DWORD WINAPI audioThread(void* data);
@@ -89,7 +139,7 @@ Socket* audio_socket[AUDIO_CHANNELS];
 void swapChunk_CB(int chn){
 	int rbytes;
 	do{
-		rbytes = recv(audio_socket[chn]->sock, ports[chn].buffer, RCV_BUFSIZE, 0);
+		rbytes = recv(audio_socket[chn]->sock, (char*)ports[chn].buffer, RCV_BUFSIZE, 0);
 	}while(rbytes <= 0);
 	
 	// Audio port closed on Vita side
@@ -143,7 +193,7 @@ DWORD WINAPI audioThread(void* data) {
 	u_long _true = 1;
 	ioctlsocket(audio_socket[id]->sock, FIONBIO, &_true);
 	do{
-		rbytes = recv(audio_socket[id]->sock, port->buffer, RCV_BUFSIZE, 0);
+		rbytes = recv(audio_socket[id]->sock, (char*)port->buffer, RCV_BUFSIZE, 0);
 	}while (rbytes <= 0);
 	
 	port->chunk = Mix_QuickLoad_RAW(port->buffer, rbytes);
@@ -155,8 +205,34 @@ DWORD WINAPI audioThread(void* data) {
 	return 0;
 }
 
-int main(int argc, char* argv[]){
+WNDPROC oldProc;
+HICON icon;
+HWND hwnd;
 
+LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam){
+	if (msg == WM_SETCURSOR){
+		if (LOWORD(lParam) == HTCLIENT){
+			::SetCursor(::LoadCursor(NULL, IDC_ARROW));
+			return TRUE;
+		}
+	}
+	return ::CallWindowProc(oldProc, hwnd, msg, wParam, lParam);
+}
+
+void setWindowIconFromRes()
+{
+	HINSTANCE handle = ::GetModuleHandle(NULL);
+	icon = ::LoadIcon(handle, MAKEINTRESOURCE(ICO1));
+	SDL_SysWMinfo wminfo;
+	SDL_VERSION(&wminfo.version)
+	SDL_GetWMInfo(&wminfo);
+	hwnd = wminfo.window;
+	::SetClassLong(hwnd, GCL_HICON, (LONG) icon);
+	oldProc = (WNDPROC) ::SetWindowLong(hwnd, GWL_WNDPROC, (LONG) WndProc);
+}
+
+int main(int argc, char* argv[]){
+	
 	#ifdef __WIN32__
 	WORD versionWanted = MAKEWORD(1, 1);
 	WSADATA wsaData;
@@ -196,7 +272,6 @@ int main(int argc, char* argv[]){
 		close(my_socket->sock);
 		return -1;
 	}else printf("\nConnection established!");
-	printf("\n\n%d\n\n", err);
 	fflush(stdout);
 	u_long _true = 1;
 	uint8_t accelerated;
@@ -205,7 +280,7 @@ int main(int argc, char* argv[]){
 	recv(my_socket->sock, sizes, 32, 0);
 	sscanf(sizes, "%d;%d;%hhu", &width, &height, &accelerated);
 	printf("\nThe game %s hardware acceleration.", accelerated ? "supports" : "does not support");
-	printf("\nSetting window resolution to %d x %d", width, height);
+	printf("\nGame resolution: %dx%d", width, height);
 	fflush(stdout);
 	ioctlsocket(my_socket->sock, FIONBIO, &_true);
 	int rcvbuf = RCV_BUFSIZE;
@@ -219,35 +294,59 @@ int main(int argc, char* argv[]){
 		CreateThread(NULL, 0, audioThread, &thdId[i], 0, NULL);
 	}
 	
-	// Initializing SDL and openGL stuffs
+	// Initializing SDL
 	uint8_t quit = 0;
 	SDL_Event event;
-	SDL_Surface* screen = NULL;
 	SDL_Init( SDL_INIT_EVERYTHING );
-	SDL_GL_SetAttribute( SDL_GL_DOUBLEBUFFER, 1 );
-	screen = SDL_SetVideoMode( width, height, 32, SDL_OPENGL );
-	glClearColor( 0, 0, 0, 0 );
-	glEnable( GL_TEXTURE_2D );
-	glViewport( 0, 0, width, height );
-	glMatrixMode( GL_PROJECTION );
-	glLoadIdentity();
-	glOrtho( 0, width, height, 0, -1, 1 );
-	glMatrixMode( GL_MODELVIEW );
-	glLoadIdentity();
-	SDL_WM_SetCaption("VITA2PC", NULL);
 	
-	// Framebuffer & texture stuffs
+	// Initializing window
+	setWindowIconFromRes();
+	SDL_WM_SetCaption("VITA2PC", NULL);
+	SDL_GL_SetAttribute( SDL_GL_DOUBLEBUFFER, 1 );
+	changeDisplayMode(mode);
+	
+	// Creating taskbar icon
+	SDL_EventState(SDL_SYSWMEVENT, SDL_ENABLE);
+	NOTIFYICONDATA notifyIconData;
+	TCHAR szTIP[64] = TEXT("VITA2PC");
+	memset( &notifyIconData, 0, sizeof( NOTIFYICONDATA ) ) ;
+	notifyIconData.cbSize = sizeof(NOTIFYICONDATA);
+	notifyIconData.hWnd = hwnd;
+	notifyIconData.uID = ID_TRAY_APP_ICON;
+	notifyIconData.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
+	notifyIconData.uCallbackMessage = WM_SYSICON;
+	notifyIconData.hIcon = (HICON)LoadIcon( GetModuleHandle(NULL), MAKEINTRESOURCE(ICO1) ) ;
+	strncpy(notifyIconData.szTip, szTIP, sizeof(szTIP));
+	Shell_NotifyIcon(NIM_ADD, &notifyIconData);
+	
+	// Framebuffer and texture setup
 	glGenTextures( 1, &texture );
 	glBindTexture( GL_TEXTURE_2D, texture );
-	buffer = (uint8_t*)malloc((width*height)<<2);
+	buffer = (uint8_t*)malloc((960*544)<<2);
 	
 	for (;;){
 
 		// Receiving a new frame
 		int rbytes = 0;
 		while (rbytes <= 0){
-			rbytes = recv(my_socket->sock, buffer, RCV_BUFSIZE, 0);
+			rbytes = recv(my_socket->sock, (char*)buffer, RCV_BUFSIZE, 0);
 			while( SDL_PollEvent( &event ) ) {
+				switch (event.type){
+					case SDL_QUIT: // Closing application
+						quit = 1;
+						break;
+					case SDL_SYSWMEVENT: // Changing display mode
+						if (event.syswm.msg->msg == WM_USER + 1){
+							if (LOWORD(event.syswm.msg->lParam) == WM_LBUTTONUP){
+								mode = (mode + 1) % DISPLAY_MODES;
+								printf("\nSwitched to %s mode.", modes[mode]);
+								changeDisplayMode(mode);
+							}
+						}
+						break;
+					default:
+						break;
+				}
 				if( event.type == SDL_QUIT ) {
 					quit = 1;
 				} 
