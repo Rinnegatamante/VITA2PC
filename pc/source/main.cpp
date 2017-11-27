@@ -4,6 +4,8 @@ extern "C"{
 	#include "SDL/SDL_mixer.h"
 	#include "SDL/SDL_syswm.h"
 	#include "SDL/SDL_opengl.h"
+	#include "AL/al.h"
+	#include "AL/alc.h"
 	#include "icon.h"
 }
 #include <stdio.h>
@@ -25,6 +27,7 @@ extern "C"{
 #define VIDEO_PORT     5000     // Port to use for video streaming
 #define AUDIO_PORT     4000     // Starting port to use for audio streaming
 #define RCV_BUFSIZE    0x800000 // Size of the buffer used to store received packets
+#define BUFSIZE_SWAP   0x100000 // Offset of buffer swap for audio buffers
 #define AUDIO_CHANNELS 8        // PSVITA has 8 available audio channels
 #define DISPLAY_MODES  4        // Available rendering modes
 
@@ -62,6 +65,14 @@ char host[32];
 static audioPort ports[AUDIO_CHANNELS];
 static int thdId[AUDIO_CHANNELS] = {0,1,2,3,4,5,6,7};
 static int mix_started = 0;
+int audio_mode = 0;
+
+// OpenAL config
+ALuint snd_data[AUDIO_CHANNELS];
+ALuint snd_src[AUDIO_CHANNELS];
+ALCdevice* dev;
+ALCcontext* ctx;
+volatile int queued[AUDIO_CHANNELS];
 
 int mode = 0;
 
@@ -133,7 +144,7 @@ void changeDisplayMode(int mode){
 	}
 }
 
-DWORD WINAPI audioThread(void* data);
+DWORD WINAPI SDLaudioThread(void* data);
 Socket* audio_socket[AUDIO_CHANNELS];
 
 void swapChunk_CB(int chn){
@@ -147,7 +158,7 @@ void swapChunk_CB(int chn){
 	// Audio port closed on Vita side
 	if (rbytes < 512){
 		printf("\nAudio channel %d closed", chn);
-		CreateThread(NULL, 0, audioThread, &thdId[chn], 0, NULL);
+		CreateThread(NULL, 0, SDLaudioThread, &thdId[chn], 0, NULL);
 		return;
 	}
 	
@@ -156,7 +167,7 @@ void swapChunk_CB(int chn){
 	//if (err == -1) printf("\nERROR: Failed outputting audio chunk.\n%s",Mix_GetError());
 }
 
-DWORD WINAPI audioThread(void* data) {
+DWORD WINAPI SDLaudioThread(void* data) {
 	
 	int* ptr = (int*)data;
 	int id = ptr[0];
@@ -207,6 +218,88 @@ DWORD WINAPI audioThread(void* data) {
 	return 0;
 }
 
+DWORD WINAPI ALaudioThread(void* data) {
+	
+	int* ptr = (int*)data;
+	int id = ptr[0];
+	int buf_idx = 0;
+	int al_idx = id * 3;
+	
+	printf("\nAudio thread for channel %d started", id);
+	
+	// Creating client socket
+	audio_socket[id] = (Socket*) malloc(sizeof(Socket));
+	memset(&audio_socket[id]->addrTo, '0', sizeof(audio_socket[id]->addrTo));
+	audio_socket[id]->addrTo.sin_family = AF_INET;
+	audio_socket[id]->addrTo.sin_port = htons(AUDIO_PORT + id);
+	audio_socket[id]->addrTo.sin_addr.s_addr = inet_addr(host);
+	int addrLen = sizeof(audio_socket[id]->addrTo);
+	audio_socket[id]->sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+	
+	// Connecting to VITA2PC
+	int err = connect(audio_socket[id]->sock, (struct sockaddr*)&audio_socket[id]->addrTo, sizeof(audio_socket[id]->addrTo));
+	
+	int rbytes;
+	do{
+		usleep(10000);
+		send(audio_socket[id]->sock, "request", 8, 0);
+		rbytes = recv(audio_socket[id]->sock, (char*)&ports[id], RCV_BUFSIZE, 0);
+	}while (rbytes <= 0);
+	
+	send(audio_socket[id]->sock, "request", 8, 0);
+	audioPort* port = (audioPort*)&ports[id];
+	memset(port->buffer, 0, RCV_BUFSIZE);
+	printf("\nAudio thread for port %d operative (Samplerate: %d Hz, Mode: %s)", id, port->samplerate, port->mode == 0 ? "Mono" : "Stereo");
+		
+	printf("\nStarted device with Samplerate: %d Hz, Mode: %s, Chunk Length: %d", port->samplerate, port->mode == 0 ? "Mono" : "Stereo", port->len);
+	if (port->len < 4096) port->len = 4096;
+	
+	int rcvbuf = RCV_BUFSIZE;
+	setsockopt(audio_socket[id]->sock, SOL_SOCKET, SO_RCVBUF, (char*)&rcvbuf, sizeof(rcvbuf));
+	u_long _true = 1;
+	ioctlsocket(audio_socket[id]->sock, FIONBIO, &_true);
+	
+	ALenum format = port->mode == 0 ? AL_FORMAT_MONO16 : AL_FORMAT_STEREO16;
+	alBufferData(snd_data[al_idx + buf_idx], format, port->buffer, port->len, port->samplerate);
+	alBufferData(snd_data[al_idx + buf_idx + 1], format, port->buffer, port->len, port->samplerate);
+	alBufferData(snd_data[al_idx + buf_idx + 2], format, port->buffer, port->len, port->samplerate);
+	alSourceQueueBuffers(snd_src[id], 3, &snd_data[al_idx + buf_idx]);
+	alSourcePlay(snd_src[id]);
+	
+	ALuint buffer;
+	ALint val;
+	
+	for (;;){
+	
+		alGetSourcei(snd_src[id], AL_BUFFERS_PROCESSED, &val);
+		if(val <= 0) continue;
+
+		while (val--){
+			do{
+				rbytes = recv(audio_socket[id]->sock, (char*)port->buffer + BUFSIZE_SWAP * buf_idx, RCV_BUFSIZE, 0);
+			}while (rbytes <= 0);
+			if (rbytes < 512){
+				do{
+					alGetSourcei(snd_src[id], AL_SOURCE_STATE, &val);
+				}while(val == AL_PLAYING);
+				alSourceUnqueueBuffers(snd_src[id], 3, &snd_data[al_idx + buf_idx]);
+				printf("\nAudio channel %d closed", id);
+				CreateThread(NULL, 0, ALaudioThread, &thdId[id], 0, NULL);
+				return 0;
+			}
+			alSourceUnqueueBuffers(snd_src[id], 1, &buffer);
+			alBufferData(buffer, format, port->buffer + BUFSIZE_SWAP * buf_idx, port->len, port->samplerate);
+			alSourceQueueBuffers(snd_src[id], 1, &buffer);
+			buf_idx = (buf_idx + 1) % 3;
+		}
+	
+		alGetSourcei(snd_src[id], AL_SOURCE_STATE, &val);
+		if(val != AL_PLAYING) alSourcePlay(snd_src[id]);
+		
+	}
+
+}
+
 WNDPROC oldProc;
 HICON icon;
 HWND hwnd;
@@ -253,6 +346,15 @@ int main(int argc, char* argv[]){
 	// Writing info on the screen
 	printf("IP: %s\nPort: %d\n\n",host, VIDEO_PORT);
 	
+	// Asking for preferred audio mode
+	printf("Select audio driver (0 = SDL Mixer, 1 = OpenAL): ");
+	scanf("%d",&audio_mode);
+	if (audio_mode != 0 && audio_mode != 1){
+		printf("\nInvalid audio mode, SDL Mixer will be used...");
+		audio_mode = 0;
+	}
+	
+	printf("\n%s will be used as audio driver.", audio_mode == 0 ? "SDL Mixer" : "OpenAL");
 	
 	// Creating client socket
 	Socket* my_socket = (Socket*) malloc(sizeof(Socket));
@@ -290,12 +392,6 @@ int main(int argc, char* argv[]){
 	getsockopt(my_socket->sock, SOL_SOCKET, SO_RCVBUF, (char*)(&rcvbuf), &dummy);
 	printf("\nReceive buffer size set to %d bytes", rcvbuf);
 	
-	// Starting audio streaming thread
-	int i;
-	for (i = 0; i < AUDIO_CHANNELS; i++){
-		CreateThread(NULL, 0, audioThread, &thdId[i], 0, NULL);
-	}
-	
 	// Initializing SDL
 	uint8_t quit = 0;
 	SDL_Event event;
@@ -320,6 +416,26 @@ int main(int argc, char* argv[]){
 	notifyIconData.hIcon = (HICON)LoadIcon( GetModuleHandle(NULL), MAKEINTRESOURCE(ICO1) ) ;
 	strncpy(notifyIconData.szTip, szTIP, sizeof(szTIP));
 	Shell_NotifyIcon(NIM_ADD, &notifyIconData);
+	
+	// Starting OpenAL if required
+	if (audio_mode == 1){
+		printf("\nInitializing audio system...");
+		const char* devname = alcGetString(NULL, ALC_DEFAULT_DEVICE_SPECIFIER);
+		printf("\nDetected %s audio device...", devname);
+		dev = alcOpenDevice(devname);
+		printf("\nCreating audio context...");
+		ctx = alcCreateContext(dev, NULL);
+		alcMakeContextCurrent(ctx);
+		alGenBuffers(AUDIO_CHANNELS * 3, snd_data);
+		alGenSources(AUDIO_CHANNELS, snd_src);
+		printf("\nAudio system ready!");
+		fflush(stdout);
+	}
+	
+	// Starting audio streaming thread
+	for (int i = 0; i < AUDIO_CHANNELS; i++){
+		CreateThread(NULL, 0, audio_mode == 0 ? SDLaudioThread : ALaudioThread, &thdId[i], 0, NULL);
+	}
 	
 	// Framebuffer and texture setup
 	glGenTextures( 1, &texture );

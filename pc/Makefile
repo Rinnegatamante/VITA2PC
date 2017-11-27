@@ -2,7 +2,7 @@ TARGET := VITA2PC
 SOURCES := source
 BUILD	:= build
 
-LIBS := -lopengl32 -lSDL -lSDL_image -lSDL_mixer -lpsapi -lws2_32 -lstdc++
+LIBS := -lOpenAL32 -lopengl32 -lSDL -lSDL_image -lSDL_mixer -lpsapi -lws2_32 -lstdc++
 
 CFLAGS := -fpermissive -DNO_STDIO_REDIRECT -Dmain=SDL_main
 LFLAGS :=
