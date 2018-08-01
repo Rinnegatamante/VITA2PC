@@ -38,7 +38,6 @@ target_link_libraries(VITA2PC
   SceLibKernel_stub_weak
   SceDisplay_stub_weak
   SceSysmem_stub_weak
-  jpeg
   k
   gcc
   SceNet_stub_weak

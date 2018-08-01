@@ -1,3 +1,5 @@
+#include <GL/glew.h>
+
 extern "C"{
 	#include "SDL/SDL.h"
 	#include "SDL/SDL_image.h"
@@ -58,14 +60,14 @@ SDL_Surface* frame = NULL;
 SDL_Surface* screen = NULL;
 SDL_Surface* new_frame = NULL;
 uint8_t* buffer;
-GLint nofcolors = 3;
-GLenum texture_format=GL_RGB;
 GLuint texture=0, min_filter, mag_filter;
 char host[32];
 static audioPort ports[AUDIO_CHANNELS];
 static int thdId[AUDIO_CHANNELS] = {0,1,2,3,4,5,6,7};
 static int mix_started = 0;
 int audio_mode = 0;
+
+uint8_t *y_buff, *u_buff, *v_buff;
 
 // OpenAL config
 ALuint snd_data[AUDIO_CHANNELS];
@@ -76,28 +78,69 @@ volatile int queued[AUDIO_CHANNELS];
 
 int mode = 0;
 
+GLuint program, shader;
+
+char *fragment =
+	"uniform sampler2DRect Ytex;\n"
+	"uniform sampler2DRect Utex,Vtex;\n"
+	"void main(void) {\n"
+	"	float nx,ny,r,g,b,y,u,v;\n"
+	"	vec4 txl,ux,vx;"
+	"	nx=gl_TexCoord[0].x;\n"
+	"	ny=576.0-gl_TexCoord[0].y;\n"
+	"	y=texture2DRect(Ytex,vec2(nx,ny)).r;\n"
+	"	u=texture2DRect(Utex,vec2(nx/2.0,ny/2.0)).r;\n"
+	"	v=texture2DRect(Vtex,vec2(nx/2.0,ny/2.0)).r;\n"
+
+	"	y=1.1643*(y-0.0625);\n"
+	"	u=u-0.5;\n"
+	"	v=v-0.5;\n"
+
+	"	r=y+1.5958*v;\n"
+	"	g=y-0.39173*u-0.81290*v;\n"
+	"	b=y+2.017*u;\n"
+
+	"	gl_FragColor=vec4(r,g,b,1.0);\n"
+	"}\n";
+
 void updateFrame(){
 
-	// Loading frame
-	SDL_RWops* rw = SDL_RWFromMem(buffer,size);
-	new_frame = IMG_Load_RW(rw, 1);
-	if (new_frame != NULL){
-		SDL_FreeSurface(frame);
-		frame = new_frame;
-	}else printf("\nSDL Error: %s", SDL_GetError());
-	if (frame == NULL) return;
+    glActiveTexture(GL_TEXTURE1);
+    int i=glGetUniformLocation(program, "Utex");
+    glUniform1i(i, 1);
+	glBindTexture(GL_TEXTURE_RECTANGLE_NV, 1);
 	
-	fflush(stdout);
-	glTexImage2D( GL_TEXTURE_2D, 0, nofcolors, frame->w, frame->h, 0, texture_format, GL_UNSIGNED_BYTE, frame->pixels );
+	glTexParameteri(GL_TEXTURE_RECTANGLE_NV, GL_TEXTURE_MAG_FILTER, min_filter);
+    glTexParameteri(GL_TEXTURE_RECTANGLE_NV, GL_TEXTURE_MIN_FILTER, mag_filter);
+	glTexEnvf(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_DECAL);
+	glTexImage2D(GL_TEXTURE_RECTANGLE_NV, 0, GL_LUMINANCE, width/2, height/2, 0, GL_LUMINANCE, GL_UNSIGNED_BYTE, u_buff);
+	
+    glActiveTexture(GL_TEXTURE2);
+    i=glGetUniformLocation(program, "Vtex");
+    glUniform1i(i, 2);
+    glBindTexture(GL_TEXTURE_RECTANGLE_NV, 2);
+	
+	glTexParameteri(GL_TEXTURE_RECTANGLE_NV, GL_TEXTURE_MAG_FILTER, min_filter);
+    glTexParameteri(GL_TEXTURE_RECTANGLE_NV, GL_TEXTURE_MIN_FILTER, mag_filter);
+	glTexEnvf(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_DECAL);
+	glTexImage2D(GL_TEXTURE_RECTANGLE_NV, 0, GL_LUMINANCE, width/2, height/2, 0, GL_LUMINANCE, GL_UNSIGNED_BYTE, v_buff);
+	
+	glActiveTexture(GL_TEXTURE0);
+    i=glGetUniformLocation(program, "Ytex");
+    glUniform1i(i, 0);
+    glBindTexture(GL_TEXTURE_RECTANGLE_NV, 3);
+	
+	glTexParameteri(GL_TEXTURE_RECTANGLE_NV, GL_TEXTURE_MAG_FILTER, min_filter);
+    glTexParameteri(GL_TEXTURE_RECTANGLE_NV, GL_TEXTURE_MIN_FILTER, mag_filter);
+	glTexEnvf(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_DECAL);
+	glTexImage2D(GL_TEXTURE_RECTANGLE_NV, 0, GL_LUMINANCE, width, height, 0, GL_LUMINANCE, GL_UNSIGNED_BYTE, y_buff);
+	
 }
 
 // Drawing function using openGL
 void drawFrame(){
 	if (texture == 0) return;	
 	glClear( GL_COLOR_BUFFER_BIT );
-	glBindTexture( GL_TEXTURE_2D, texture );
-	glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, min_filter);
-	glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, mag_filter);
 	glBegin( GL_QUADS );
 	glTexCoord2i( 0, 0 );
 	glVertex3f( 0, 0, 0 );
@@ -334,6 +377,12 @@ int main(int argc, char* argv[]){
 	WSAStartup(versionWanted, &wsaData);
 	#endif
 	
+	printf("VITA2PC Client v.0.3\n");
+	printf("--------------------\n");
+	printf("Thanks to Billy McLaughin II and XandridFire\n");
+	printf("for their awesome support on Patreon!\n\n");
+	fflush(stdout);
+	
 	int dummy = 4;
 	if (argc > 1){
 		char* ip = (char*)(argv[1]);
@@ -403,6 +452,17 @@ int main(int argc, char* argv[]){
 	SDL_GL_SetAttribute( SDL_GL_DOUBLEBUFFER, 1 );
 	changeDisplayMode(mode);
 	
+	glewInit();
+	
+	// Initializing shader
+	program = glCreateProgram();
+	shader = glCreateShader(GL_FRAGMENT_SHADER);
+	glShaderSource(shader, 1, (const char**)&fragment, NULL);
+	glCompileShader(shader);
+	glAttachShader(program, shader);
+	glLinkProgram(program);
+	glUseProgram(program);
+	
 	// Creating taskbar icon
 	SDL_EventState(SDL_SYSWMEVENT, SDL_ENABLE);
 	NOTIFYICONDATA notifyIconData;
@@ -437,10 +497,13 @@ int main(int argc, char* argv[]){
 		CreateThread(NULL, 0, audio_mode == 0 ? SDLaudioThread : ALaudioThread, &thdId[i], 0, NULL);
 	}
 	
-	// Framebuffer and texture setup
-	glGenTextures( 1, &texture );
-	glBindTexture( GL_TEXTURE_2D, texture );
-	buffer = (uint8_t*)malloc((960*544)<<2);
+	// Framebuffer setup
+	buffer = (uint8_t*)malloc((960*544)<<1);
+	y_buff = buffer;
+	u_buff = buffer + (width * height);
+	v_buff = u_buff + ((width * height) / 4);
+	
+	bool t = false;
 	
 	for (;;){
 
@@ -474,6 +537,14 @@ int main(int argc, char* argv[]){
 		}
 		if (quit) break;
 		
+		if (!t){
+			printf("\nSaving file");
+			printf("\nSaving file");
+			FILE *f = fopen("file.yuv", "wb+");
+			fwrite(buffer, 1, rbytes, f);
+			fclose(f);
+			t = true;
+		}
 		updateFrame();
 		drawFrame();
 		

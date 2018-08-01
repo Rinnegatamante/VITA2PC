@@ -2,10 +2,9 @@ TARGET := VITA2PC
 SOURCES := source
 BUILD	:= build
 
-LIBS := -lOpenAL32 -lopengl32 -lSDL -lSDL_image -lSDL_mixer -lpsapi -lws2_32 -lstdc++
+LIBS := -lOpenAL32 -lSDL -lSDL_image -lSDL_mixer -lpsapi -lws2_32 -lstdc++ -lglu32 -lopengl32 -lglew32
 
-CFLAGS := -fpermissive -DNO_STDIO_REDIRECT -Dmain=SDL_main
-LFLAGS :=
+CFLAGS := -w -fpermissive -DNO_STDIO_REDIRECT -Dmain=SDL_main
 LDARGS := -DNO_STDIO_REDIRECT -Dmain=SDL_main
 
 C_FILES	:= $(shell find $(SOURCES) -type f -name '*.c')
@@ -21,7 +20,7 @@ $(TARGET).exe: $(OBJ_FILES)
 	@echo Creating icon resource file...
 	@windres source/icon.rc -O coff -o icon.res
 	@echo Linking object files...
-	$(LD) -o $@ $(LDARGS) $^ icon.res $(LIBS)
+	$(LD) -o $@ $^ icon.res $(LIBS)
 
 %.o: %.c
 	@echo Creating object file $@...

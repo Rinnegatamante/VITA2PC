@@ -141,7 +141,7 @@ void hookFunction(uint32_t nid, const void* func){
 
 // Asynchronous video streaming thread
 int stream_thread(SceSize args, void *argp){
-	int mem_size;
+	int mem_size = jpeg_encoder.yuv_size;
 	SceDisplayFrameBuf param;
 	param.size = sizeof(SceDisplayFrameBuf);
 	sceKernelWaitSema(async_mutex, 1, NULL);
@@ -149,8 +149,8 @@ int stream_thread(SceSize args, void *argp){
 		sceDisplayGetFrameBuf(&param, SCE_DISPLAY_SETBUF_NEXTFRAME);
 		if (rescale_buffer != NULL){ // Downscaler available
 			rescaleBuffer((uint32_t*)param.base, rescale_buffer, param.pitch, param.width, param.height);
-			mem = encodeARGB(&jpeg_encoder, rescale_buffer, 512, &mem_size);
-		}else mem = encodeARGB(&jpeg_encoder, param.base, param.pitch, &mem_size);
+			mem = encodeARGB(&jpeg_encoder, rescale_buffer, 512);
+		}else mem = encodeARGB(&jpeg_encoder, param.base, param.pitch);
 		sceNetSendto(stream_skt, mem, mem_size, 0, (SceNetSockaddr*)&addrFrom, sizeof(addrFrom));
 	}
 	return 0;
@@ -293,7 +293,7 @@ int sceDisplaySetFrameBuf_patched(const SceDisplayFrameBuf *pParam, int sync) {
 	}else if ((!isEncoderUnavailable) && (isNetAvailable || skip_net_init)){
 		char txt[32], unused[16];
 		int sndbuf_size = STREAM_BUFSIZE;
-		int mem_size;
+		int mem_size = jpeg_encoder.yuv_size;
 		unsigned int fromLen = sizeof(addrFrom);
 		switch (status){
 			case CONFIG_MENU:
@@ -325,8 +325,8 @@ int sceDisplaySetFrameBuf_patched(const SceDisplayFrameBuf *pParam, int sync) {
 				if (loopDrawing == (3 + frameskip)){				
 					if (rescale_buffer != NULL){ // Downscaler available
 						rescaleBuffer((uint32_t*)pParam->base, rescale_buffer, pParam->pitch, pParam->width, pParam->height);
-						mem = encodeARGB(&jpeg_encoder, rescale_buffer, 512, &mem_size);
-					}else mem = encodeARGB(&jpeg_encoder, pParam->base, pParam->pitch, &mem_size);
+						mem = encodeARGB(&jpeg_encoder, rescale_buffer, 512);
+					}else mem = encodeARGB(&jpeg_encoder, pParam->base, pParam->pitch);
 					sceNetSendto(stream_skt, mem, mem_size, 0, (SceNetSockaddr*)&addrFrom, sizeof(addrFrom));
 					loopDrawing = 0;
 				}else loopDrawing++;
