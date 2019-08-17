@@ -50,6 +50,7 @@ static SceUID isEncoderUnavailable = 0;
 static SceUID isNetAvailable = 1;
 static SceUID firstBoot = 1;
 static uint8_t audioEnabled = 1;
+static uint8_t videoEnabled = 1;
 static uint8_t status = NOT_TRIGGERED;
 static int cfg_i = 0;
 static int qual_i = 2;
@@ -72,7 +73,7 @@ static uint32_t old_buttons;
 // Menu related variables
 static char* qualities[] = {"Best", "High", "Default", "Low", "Worst"};
 static uint8_t qual_val[] = {0, 64, 128, 192, 255};
-static char* menu[] = {"Video Quality: ", "Video Codec: MJPEG", "Hardware Acceleration: ", "Downscaler: ","Frame Skip: ", "Stream Type: ", "Audio Streaming: ", "Start Screen Streaming"};
+static char* menu[] = {"Video Quality: ", "Video Streaming: ", "Hardware Acceleration: ", "Downscaler: ","Frame Skip: ", "Stream Type: ", "Audio Streaming: ", "Start Screen Streaming"};
 
 // Generic variables
 static uint32_t mempool_size = 0x500000;
@@ -109,6 +110,9 @@ void drawConfigMenu(){
 		switch (i){
 			case 0:
 				drawStringF(5, 80 + i*20, "%s%s", menu[i], qualities[qual_i]);
+				break;
+			case 1:
+				drawStringF(5, 80 + i*20, "%s%s", menu[i], videoEnabled ? "Enabled" : "Disabled");
 				break;
 			case 2:
 				drawStringF(5, 80 + i*20, "%s%s", menu[i], jpeg_encoder.isHwAccelerated ? "Enabled" : "Disabled");
@@ -192,6 +196,9 @@ void checkInput(SceCtrlData *ctrl){
 				case 0:
 					qual_i = (qual_i + 1) % QUALITY_ENTRIES;
 					encoderSetQuality(&jpeg_encoder, qual_val[qual_i]);
+					break;
+				case 1:
+					videoEnabled = (videoEnabled + 1) % 2;
 					break;
 				case 3:
 					param.size = sizeof(SceDisplayFrameBuf);
@@ -299,7 +306,7 @@ int sceDisplaySetFrameBuf_patched(const SceDisplayFrameBuf *pParam, int sync) {
 			case CONFIG_MENU:
 				drawStringF(5,5, "IP: %s", vita_ip);
 				drawStringF(5,25, "Title ID: %s", titleid);
-				drawString(5, 50, "VITA2PC v.0.2 Experimental - CONFIG MENU");
+				drawString(5, 50, "VITA2PC v.0.3 Experimental - CONFIG MENU");
 				drawStringF(5, 250, "Resolution: %d x %d", pParam->width, pParam->height);
 				drawConfigMenu();
 				break;
@@ -318,7 +325,7 @@ int sceDisplaySetFrameBuf_patched(const SceDisplayFrameBuf *pParam, int sync) {
 				status = SYNC_BROADCAST + stream_type;
 				
 				// Sending request to secondary thread
-				if (status == ASYNC_BROADCAST) sceKernelSignalSema(async_mutex, 1);
+				if ((status == ASYNC_BROADCAST) && videoEnabled) sceKernelSignalSema(async_mutex, 1);
 				
 				break;
 			case SYNC_BROADCAST:
